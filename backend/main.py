@@ -8,7 +8,7 @@ import time
 import dotenv
 import os
 
-from util.body import InsertSession, FinishSession
+from util.body import InsertSession, FinishSession, UserRegister
 from util.maker import idMaker
 
 dotenv.load_dotenv("../.env")
@@ -30,6 +30,20 @@ app.add_middleware(
 @app.get('/')
 def test():
     raise HTTPException(404, "Hi")
+
+@app.post("/user/register")
+def session_start(user: UserRegister):
+    # MIFARE Classic 데이터 블록은 16바이트이므로 회원 UID도 16자로 제한한다.
+    uid = idMaker()[:16]
+    join_date = datetime.datetime.now()
+    con = db.connect()
+    query = "INSERT INTO \"user\".\"user\" (uid, name, tel, email, join_date) VALUES (%s, %s, %s, %s, %s)"
+    params = (uid, user.name, user.tel, user.email, join_date)
+    db.executeQuery(con, query, params)
+
+    return {
+        "uid": uid
+    }
 
 @app.post("/session/start")
 def session_start(session: InsertSession):

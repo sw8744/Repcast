@@ -815,6 +815,181 @@ tbody tr:hover {
   filter: brightness(1.04);
 }
 
+.primary-button:disabled {
+  opacity: .52;
+  box-shadow: none;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.serial-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dfe5eb;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.serial-panel.connected {
+  border-color: #bfe1dc;
+  background: #f4fbf9;
+}
+
+.serial-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.serial-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  color: #728096;
+  border-radius: 8px;
+  background: #e9edf2;
+}
+
+.serial-panel.connected .serial-icon {
+  color: #07857e;
+  background: #dbf2ed;
+}
+
+.serial-heading > div {
+  display: grid;
+  gap: 2px;
+  margin-right: auto;
+}
+
+.serial-heading strong {
+  color: #354157;
+  font-size: 10px;
+}
+
+.serial-heading small {
+  color: #8a96a7;
+  font-size: 8px;
+}
+
+.serial-panel.connected .serial-heading small {
+  color: #16816f;
+}
+
+.serial-heading button,
+.retry-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 9px;
+  color: #176b6b;
+  border: 1px solid #badcd9;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.serial-heading button:disabled {
+  opacity: .6;
+  cursor: wait;
+}
+
+.workflow-message {
+  display: flex;
+  min-height: 37px;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 9px 10px;
+  color: #607086;
+  border-radius: 6px;
+  background: #edf1f5;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.workflow-message svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.workflow-message.registering,
+.workflow-message.write-mode,
+.workflow-message.writing,
+.workflow-message.read-mode,
+.workflow-message.verifying {
+  color: #176d70;
+  background: #e5f5f3;
+}
+
+.workflow-message.error {
+  color: #a34545;
+  background: #fff0f0;
+}
+
+.workflow-message.success {
+  color: #087565;
+  background: #e4f7f1;
+}
+
+.workflow-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.workflow-steps span {
+  padding: 6px 5px;
+  color: #909baa;
+  border: 1px solid #e2e6eb;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 7px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.workflow-steps span.active {
+  color: #087c7d;
+  border-color: #65bdb7;
+  background: #eaf8f6;
+}
+
+.workflow-steps span.done {
+  color: #fff;
+  border-color: #16968e;
+  background: #16968e;
+}
+
+.retry-button {
+  width: 100%;
+  color: #a14545;
+  border-color: #e8bcbc;
+}
+
+.serial-log {
+  display: grid;
+  max-height: 60px;
+  gap: 2px;
+  padding: 7px 8px;
+  overflow: auto;
+  border-radius: 5px;
+  background: #152235;
+}
+
+.serial-log code {
+  overflow: hidden;
+  color: #bcd0df;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .member-list-panel {
   padding: 0;
   overflow: hidden;
@@ -1053,6 +1228,7 @@ tbody tr:hover {
   }
 
   .member-form-panel .form-title,
+  .member-form-panel .serial-panel,
   .member-form-panel .primary-button {
     grid-column: 1 / -1;
   }
@@ -1146,6 +1322,7 @@ tbody tr:hover {
   }
 
   .member-form-panel .form-title,
+  .member-form-panel .serial-panel,
   .member-form-panel .primary-button {
     grid-column: auto;
   }

@@ -2,12 +2,17 @@
 #include <MFRC522.h>
 #include <string.h>
 
-#define RST_PIN 9
+// Arduino Nano ↔ MFRC522
+// D10: SDA/SS, D11: MOSI, D12: MISO, D13: SCK, D2: RST
+#define RST_PIN 2
 #define SS_PIN 10
+#define BUZZER_PIN 3
 
 const byte DATA_BLOCK = 4;       // 섹터 1의 첫 번째 데이터 블록
 const byte BLOCK_SIZE = 16;
 const byte COMMAND_SIZE = 64;
+const unsigned int BUZZER_FREQUENCY_HZ = 2000;
+const unsigned int BUZZER_DURATION_MS = 200;
 
 enum Mode {
   READ_MODE,
@@ -20,6 +25,12 @@ char writeValue[BLOCK_SIZE + 1] = "";
 char commandBuffer[COMMAND_SIZE];
 byte commandLength = 0;
 bool discardCommand = false;
+
+void beepCardDetected() {
+  tone(BUZZER_PIN, BUZZER_FREQUENCY_HZ, BUZZER_DURATION_MS);
+  delay(BUZZER_DURATION_MS);
+  noTone(BUZZER_PIN);
+}
 
 void printUid() {
   Serial.print(F("Card UID:"));
@@ -149,6 +160,8 @@ void readSerialCommand() {
 
 void setup() {
   Serial.begin(9600);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
   SPI.begin();
   mfrc522.PCD_Init();
   Serial.println(F("READY,MODE,R"));
@@ -165,6 +178,7 @@ void loop() {
     return;
   }
 
+  beepCardDetected();
   printUid();
 
   MFRC522::MIFARE_Key key;
