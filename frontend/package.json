@@ -7,6 +7,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^13.5.0",
+    "lucide-react": "^1.26.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-scripts": "5.0.1",
@@ -15,6 +16,7 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build && sudo cp -r build/* /var/www/repcast",
+    "build:sites": "react-scripts build && node scripts/build-sites.mjs",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
