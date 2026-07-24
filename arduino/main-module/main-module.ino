@@ -4,6 +4,24 @@
 #include <Adafruit_ILI9341.h>
 #include <XPT2046_Touchscreen.h>
 #include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+
+//================================================
+// 네트워크 / 장치 설정
+//================================================
+// 업로드 전에 실제 Wi-Fi 정보와 이 장치가 설치된 지점/기구 ID로 변경
+const char *WIFI_SSID = "Edtech1";
+const char *WIFI_PASSWORD = "024500699";
+const char *API_BASE_URL = "https://api.repcast.site";
+const char *GYM_ID = "f696282aa4cd4f614aa995190cf442fe";
+const char *EQUIPMENT_ID = "db1a6654814f620bfc877e23fe4629f7";
+
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
+const unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+unsigned long lastWiFiRetryTime = 0;
+bool lastDisplayedWiFiConnected = false;
 
 //================================================
 // 핀 설정
@@ -82,6 +100,7 @@ const ButtonRect BTN_END  = {165, 165, 145, 65};
 //================================================
 String currentUser = "";
 String currentUID  = "";
+String currentSessionId = "";
 
 //================================================
 // 운동 정보
@@ -174,13 +193,24 @@ int rawBottom = 3800;
 void releaseSPI();
 void keepBacklightOn();
 
+bool connectWiFi(unsigned long timeoutMs);
+void maintainWiFi();
+bool getUserByUid(const String &uid, String &userName);
+bool startRemoteSession(const String &uid, String &sid);
+bool finishRemoteSession();
+bool sendApiRequest(const String &method, const String &url,
+                    const String &requestBody, String &responseBody);
+bool getJsonString(const String &json, const String &key,
+                   int searchFrom, String &value);
+String urlEncode(const String &value);
+
 void initUltrasonicSensor();
 bool readUltrasonicDistance(int &distanceMm);
 void resetRepDetector();
 void drawUltrasonicLiveStatus();
 
 void readRFID();
-bool readCardName(String &cardName);
+bool readCardUid(String &cardUid);
 void checkHall();
 void checkWeightDelay();
 void checkRep();
@@ -203,7 +233,10 @@ void drawHello(const String &name);
 void drawWeightReady(const String &name, int selectedWeight);
 void drawActiveSet(int selectedWeight, int reps, int currentSet);
 void drawRestScreen(int completedSet);
-void drawSummaryScreen(int totalSets, int totalReps, long totalVolumeKg);
+void drawSummaryScreen(int totalSets, int totalReps, long totalVolumeKg,
+                       bool saved);
+void drawStatusMessage(const char *title, const char *message,
+                       uint16_t color);
 void drawButton(const ButtonRect &button, const char *label);
 
 bool readRawTouchAverage(int &rawX, int &rawY, int &pressure);
@@ -235,6 +268,283 @@ void keepBacklightOn()
     digitalWrite(TFT_BL, HIGH);
 }
 
+bool connectWiFi(unsigned long timeoutMs)
+{
+    if (WiFi.status() == WL_CONNECTED)
+        return true;
+
+    Serial.print("WIFI CONNECTING TO ");
+    Serial.println(WIFI_SSID);
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    lastWiFiRetryTime = millis();
+
+    unsigned long startedAt = millis();
+
+    while (WiFi.status() != WL_CONNECTED &&
+           millis() - startedAt < timeoutMs)
+    {
+        keepBacklightOn();
+        delay(250);
+    }
+
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.println("WIFI CONNECTION FAILED");
+        return false;
+    }
+
+    Serial.print("WIFI CONNECTED, IP=");
+    Serial.println(WiFi.localIP());
+    return true;
+}
+
+void maintainWiFi()
+{
+    bool connected = WiFi.status() == WL_CONNECTED;
+
+    if (!connected &&
+        millis() - lastWiFiRetryTime >= WIFI_RETRY_INTERVAL_MS)
+    {
+        Serial.println("WIFI RECONNECTING");
+        WiFi.disconnect();
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        lastWiFiRetryTime = millis();
+    }
+
+    connected = WiFi.status() == WL_CONNECTED;
+
+    if (screen == S01_TAPCARD &&
+        connected != lastDisplayedWiFiConnected)
+    {
+        lastDisplayedWiFiConnected = connected;
+        drawTapCard();
+    }
+}
+
+bool sendApiRequest(const String &method, const String &url,
+                    const String &requestBody, String &responseBody)
+{
+    responseBody = "";
+
+    if (!connectWiFi(WIFI_CONNECT_TIMEOUT_MS))
+        return false;
+
+    WiFiClientSecure client;
+    // ESP32의 CA 저장소를 별도로 관리하지 않는 구성이다. HTTPS 암호화는
+    // 사용하지만 운영 장치에서는 API 인증서의 루트 CA 등록을 권장한다.
+    client.setInsecure();
+
+    HTTPClient http;
+    http.setConnectTimeout(5000);
+    http.setTimeout(8000);
+
+    if (!http.begin(client, url))
+    {
+        Serial.println("HTTP BEGIN FAILED");
+        return false;
+    }
+
+    int statusCode = -1;
+
+    if (method == "GET")
+    {
+        statusCode = http.GET();
+    }
+    else
+    {
+        http.addHeader("Content-Type", "application/json");
+        statusCode = http.POST(requestBody);
+    }
+
+    if (statusCode > 0)
+        responseBody = http.getString();
+
+    Serial.print("HTTP ");
+    Serial.print(method);
+    Serial.print(" -> ");
+    Serial.println(statusCode);
+
+    http.end();
+    return statusCode >= 200 && statusCode < 300;
+}
+
+String urlEncode(const String &value)
+{
+    const char hex[] = "0123456789ABCDEF";
+    String encoded = "";
+
+    for (unsigned int i = 0; i < value.length(); i++)
+    {
+        unsigned char c = static_cast<unsigned char>(value.charAt(i));
+
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~')
+        {
+            encoded += static_cast<char>(c);
+        }
+        else
+        {
+            encoded += '%';
+            encoded += hex[(c >> 4) & 0x0F];
+            encoded += hex[c & 0x0F];
+        }
+    }
+
+    return encoded;
+}
+
+bool getJsonString(const String &json, const String &key,
+                   int searchFrom, String &value)
+{
+    String marker = String("\"") + key + "\"";
+    int keyPosition = json.indexOf(marker, searchFrom);
+
+    if (keyPosition < 0)
+        return false;
+
+    int colonPosition = json.indexOf(':', keyPosition + marker.length());
+
+    if (colonPosition < 0)
+        return false;
+
+    int quoteStart = json.indexOf('"', colonPosition + 1);
+
+    if (quoteStart < 0)
+        return false;
+
+    value = "";
+    bool escaped = false;
+
+    for (int i = quoteStart + 1; i < static_cast<int>(json.length()); i++)
+    {
+        char c = json.charAt(i);
+
+        if (escaped)
+        {
+            // API의 회원명에 일반적으로 필요한 JSON escape를 복원한다.
+            if (c == 'n')
+                value += '\n';
+            else if (c == 'r')
+                value += '\r';
+            else if (c == 't')
+                value += '\t';
+            else
+                value += c;
+
+            escaped = false;
+            continue;
+        }
+
+        if (c == '\\')
+        {
+            escaped = true;
+            continue;
+        }
+
+        if (c == '"')
+            return true;
+
+        value += c;
+    }
+
+    value = "";
+    return false;
+}
+
+bool getUserByUid(const String &uid, String &userName)
+{
+    String responseBody;
+    String url = String(API_BASE_URL) + "/user?uid=" + urlEncode(uid);
+
+    if (!sendApiRequest("GET", url, "", responseBody))
+        return false;
+
+    int usersPosition = responseBody.indexOf("\"users\"");
+    int arrayStart = responseBody.indexOf('[', usersPosition);
+    int arrayEnd = responseBody.indexOf(']', arrayStart);
+
+    if (usersPosition < 0 || arrayStart < 0 || arrayEnd < 0)
+        return false;
+
+    String returnedUid;
+
+    if (!getJsonString(responseBody, "uid", arrayStart, returnedUid) ||
+        returnedUid != uid)
+    {
+        Serial.println("UID IS NOT A REGISTERED USER");
+        return false;
+    }
+
+    if (!getJsonString(responseBody, "name", arrayStart, userName))
+        userName = uid;
+
+    return true;
+}
+
+bool startRemoteSession(const String &uid, String &sid)
+{
+    String requestBody =
+        String("{\"uid\":\"") + uid +
+        "\",\"gym\":\"" + String(GYM_ID) +
+        "\",\"equipment\":\"" + String(EQUIPMENT_ID) + "\"}";
+    String responseBody;
+    String url = String(API_BASE_URL) + "/session/start";
+
+    if (!sendApiRequest("POST", url, requestBody, responseBody))
+        return false;
+
+    if (!getJsonString(responseBody, "sid", 0, sid) ||
+        sid.length() == 0)
+    {
+        Serial.println("SESSION START RESPONSE HAS NO SID");
+        return false;
+    }
+
+    Serial.print("SESSION STARTED: ");
+    Serial.println(sid);
+    return true;
+}
+
+bool finishRemoteSession()
+{
+    if (currentSessionId.length() == 0)
+    {
+        Serial.println("NO ACTIVE SESSION TO FINISH");
+        return false;
+    }
+
+    String requestBody =
+        String("{\"sid\":\"") + currentSessionId +
+        "\",\"count\":" + String(memberTotalReps) +
+        ",\"set\":" + String(memberTotalSets) + "}";
+    String responseBody;
+    String url = String(API_BASE_URL) + "/session/finish";
+
+    bool success = false;
+
+    // finish는 같은 sid에 같은 값을 다시 써도 결과가 같으므로 한 번 재시도한다.
+    for (int attempt = 0; attempt < 2 && !success; attempt++)
+    {
+        success = sendApiRequest("POST", url, requestBody, responseBody);
+
+        if (!success && attempt == 0)
+            delay(500);
+    }
+
+    if (success)
+    {
+        Serial.print("SESSION FINISHED: ");
+        Serial.println(currentSessionId);
+        currentSessionId = "";
+    }
+
+    return success;
+}
+
 int weightToIndex(int selectedWeight)
 {
     if (selectedWeight == 10) return 0;
@@ -261,6 +571,7 @@ void resetSession()
     memberTotalReps = 0;
     memberTotalSets = 0;
     memberTotalVolumeKg = 0;
+    currentSessionId = "";
     lifted = false;
     waitingS04 = false;
     resetRepDetector();
@@ -364,6 +675,17 @@ void setup()
     if (!touchCalibrated || forceCalibration)
         calibrateTouch();
 
+    releaseSPI();
+    tft.fillScreen(ILI9341_BLACK);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(10, 10);
+    tft.println("CONNECTING WIFI...");
+    releaseSPI();
+
+    connectWiFi(WIFI_CONNECT_TIMEOUT_MS);
+    lastDisplayedWiFiConnected = WiFi.status() == WL_CONNECTED;
+
     // RFID 초기화
     releaseSPI();
     rfid.PCD_Init();
@@ -380,6 +702,7 @@ void loop()
 {
     keepBacklightOn();
 
+    maintainWiFi();
     readRFID();
     checkHall();
     checkWeightDelay();
@@ -552,7 +875,7 @@ void drawUltrasonicLiveStatus()
 //================================================
 // RFID
 //================================================
-bool readCardName(String &cardName)
+bool readCardUid(String &cardUid)
 {
     MFRC522::MIFARE_Key key;
 
@@ -585,7 +908,7 @@ bool readCardName(String &cardName)
         return false;
     }
 
-    cardName = "";
+    cardUid = "";
 
     for (byte i = 0; i < RFID_BLOCK_SIZE; i++)
     {
@@ -597,23 +920,23 @@ bool readCardName(String &cardName)
         if (value < 32 || value > 126)
         {
             Serial.println("INVALID CARD DATA");
-            cardName = "";
+            cardUid = "";
             return false;
         }
 
-        cardName += static_cast<char>(value);
+        cardUid += static_cast<char>(value);
     }
 
-    cardName.trim();
+    cardUid.trim();
 
-    if (cardName.length() == 0)
+    if (cardUid.length() == 0)
     {
-        Serial.println("EMPTY CARD NAME");
+        Serial.println("EMPTY CARD UID");
         return false;
     }
 
-    Serial.print("CARD NAME: ");
-    Serial.println(cardName);
+    Serial.print("STORED UID: ");
+    Serial.println(cardUid);
     return true;
 }
 
@@ -651,24 +974,57 @@ void readRFID()
     Serial.print("CARD UID: ");
     Serial.println(uid);
 
-    String storedName = "";
-    bool nameReadSuccess = readCardName(storedName);
+    String storedUid = "";
+    bool uidReadSuccess = readCardUid(storedUid);
 
     rfid.PICC_HaltA();
     rfid.PCD_StopCrypto1();
     releaseSPI();
 
-    if (!nameReadSuccess)
+    if (!uidReadSuccess)
     {
         currentUser = "";
         currentUID = "";
         screen = S01_TAPCARD;
+        drawStatusMessage("CARD ERROR", "UID READ FAILED", ILI9341_RED);
+        delay(1500);
         drawTapCard();
         return;
     }
 
-    currentUser = storedName;
-    currentUID = uid;
+    drawStatusMessage("CHECKING CARD", "PLEASE WAIT", ILI9341_CYAN);
+
+    String userName = "";
+
+    if (!getUserByUid(storedUid, userName))
+    {
+        currentUser = "";
+        currentUID = "";
+        currentSessionId = "";
+        screen = S01_TAPCARD;
+        drawStatusMessage("INVALID CARD", "ACCESS DENIED", ILI9341_RED);
+        delay(1800);
+        drawTapCard();
+        return;
+    }
+
+    String sid = "";
+
+    if (!startRemoteSession(storedUid, sid))
+    {
+        currentUser = "";
+        currentUID = "";
+        currentSessionId = "";
+        screen = S01_TAPCARD;
+        drawStatusMessage("API ERROR", "TRY AGAIN", ILI9341_RED);
+        delay(1800);
+        drawTapCard();
+        return;
+    }
+
+    currentUser = userName;
+    currentUID = storedUid;
+    currentSessionId = sid;
 
     playCardAlert();
     screen = S02_HELLO;
@@ -828,8 +1184,20 @@ void drawTapCard()
     tft.setTextSize(2);
     tft.setCursor(10, 10);
     tft.print("WiFi");
-    tft.setCursor(265, 10);
-    tft.print("OK");
+    tft.setCursor(WiFi.status() == WL_CONNECTED ? 265 : 220, 10);
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        tft.setTextColor(ILI9341_GREEN);
+        tft.print("OK");
+    }
+    else
+    {
+        tft.setTextColor(ILI9341_RED);
+        tft.print("OFFLINE");
+    }
+
+    tft.setTextColor(ILI9341_WHITE);
 
     tft.drawRoundRect(25, 60, 270, 90, 10, ILI9341_WHITE);
     tft.setTextSize(4);
@@ -847,6 +1215,26 @@ void drawTapCard()
     tft.print("ULTRASONIC READY");
 
     tft.setTextColor(ILI9341_WHITE);
+
+    releaseSPI();
+}
+
+void drawStatusMessage(const char *title, const char *message,
+                       uint16_t color)
+{
+    releaseSPI();
+    keepBacklightOn();
+
+    tft.fillScreen(ILI9341_BLACK);
+    tft.setTextColor(color);
+    tft.setTextSize(3);
+    tft.setCursor(20, 75);
+    tft.print(title);
+
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(20, 135);
+    tft.print(message);
 
     releaseSPI();
 }
@@ -982,7 +1370,8 @@ void drawRestScreen(int completedSet)
     releaseSPI();
 }
 
-void drawSummaryScreen(int totalSets, int totalReps, long totalVolumeKg)
+void drawSummaryScreen(int totalSets, int totalReps, long totalVolumeKg,
+                       bool savedSuccessfully)
 {
     releaseSPI();
     keepBacklightOn();
@@ -1014,12 +1403,14 @@ void drawSummaryScreen(int totalSets, int totalReps, long totalVolumeKg)
     tft.setCursor((320 - textWidth) / 2, 115);
     tft.print(volume);
 
-    const char *saved = "SAVED";
+    const char *saved = savedSuccessfully ? "SAVED" : "SAVE FAILED";
     tft.setTextSize(2);
     tft.getTextBounds(saved, 0, 0, &x1, &y1, &textWidth, &textHeight);
     tft.setCursor((320 - textWidth) / 2, 190);
+    tft.setTextColor(savedSuccessfully ? ILI9341_GREEN : ILI9341_RED);
     tft.print(saved);
 
+    tft.setTextColor(ILI9341_WHITE);
     releaseSPI();
 }
 
@@ -1270,11 +1661,15 @@ void checkTouches()
         Serial.println("============================================");
 
         playEndAlert();
+        drawStatusMessage("SAVING", "PLEASE WAIT", ILI9341_CYAN);
+        bool savedSuccessfully = finishRemoteSession();
+
         screen = S06_SAVE_SUMMARY;
         drawSummaryScreen(
             memberTotalSets,
             memberTotalReps,
-            memberTotalVolumeKg
+            memberTotalVolumeKg,
+            savedSuccessfully
         );
         summaryStartTime = millis();
         return;
