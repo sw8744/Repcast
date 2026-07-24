@@ -10,6 +10,7 @@ import os
 
 from util.body import InsertSession, FinishSession, UserRegister
 from util.maker import idMaker
+from util.name import romanize_korean_name
 
 dotenv.load_dotenv("../.env")
 
@@ -67,19 +68,23 @@ def user_register(user: UserRegister):
 @app.get("/user")
 def get_user(uid: str = ""):
     con = db.connect()
-    if uid:
-        query = "SELECT uid, name, tel, email, join_date, expire_date, last_use FROM \"user\".\"user\" WHERE uid=%s"
-        params = (uid, )
-    else:
-        query = "SELECT uid, name, tel, email, join_date, expire_date, last_use FROM \"user\".\"user\" ORDER BY join_date DESC"
-        params = ()
+    try:
+        if uid:
+            query = "SELECT uid, name, tel, email, join_date, expire_date, last_use FROM \"user\".\"user\" WHERE uid=%s"
+            params = (uid, )
+        else:
+            query = "SELECT uid, name, tel, email, join_date, expire_date, last_use FROM \"user\".\"user\" ORDER BY join_date DESC"
+            params = ()
 
-    res = db.executeQuery(con, query, params)
+        res = db.executeQuery(con, query, params)
+    finally:
+        con.close()
+
     return {
         "users": [
             {
                 "uid": row[0],
-                "name": row[1],
+                "name": romanize_korean_name(row[1]) if uid else row[1],
                 "tel": row[2],
                 "email": row[3],
                 "join_date": row[4],
