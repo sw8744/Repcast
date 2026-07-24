@@ -90,6 +90,83 @@ def get_user(uid: str = ""):
         ]
     }
 
+@app.get("/equipment")
+def get_equipment():
+    con = db.connect()
+    try:
+        query = """
+            SELECT id, name, category, last_used, gym, status
+            FROM equipment.list
+            ORDER BY category, name
+        """
+        res = db.executeQuery(con, query)
+    finally:
+        con.close()
+
+    return {
+        "equipment": [
+            {
+                "id": row[0],
+                "name": row[1],
+                "category": row[2],
+                "last_used": row[3],
+                "gym": row[4],
+                "status": row[5],
+            }
+            for row in res
+        ]
+    }
+
+@app.get("/session")
+def get_session():
+    con = db.connect()
+    try:
+        query = """
+            SELECT
+                s.sid,
+                s.uid,
+                u.name,
+                s.gym,
+                g.name,
+                s.equipment,
+                e.name,
+                e.category,
+                s.count,
+                s."set",
+                s.start,
+                s.finish,
+                s.weight
+            FROM equipment.session s
+            LEFT JOIN "user"."user" u ON u.uid = s.uid
+            LEFT JOIN gym.gym g ON g."key" = s.gym
+            LEFT JOIN equipment.list e ON e.id = s.equipment
+            ORDER BY s.start DESC
+        """
+        res = db.executeQuery(con, query)
+    finally:
+        con.close()
+
+    return {
+        "sessions": [
+            {
+                "sid": row[0],
+                "uid": row[1],
+                "user_name": row[2],
+                "gym": row[3],
+                "gym_name": row[4],
+                "equipment": row[5],
+                "equipment_name": row[6],
+                "category": row[7],
+                "count": row[8],
+                "set": row[9],
+                "start": row[10],
+                "finish": row[11],
+                "weight": row[12],
+            }
+            for row in res
+        ]
+    }
+
 @app.post("/session/start")
 def session_start(session: InsertSession):
     sid = idMaker()

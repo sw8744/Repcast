@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   BarChart3,
+  BicepsFlexed,
   CalendarDays,
   Cable,
   CheckCircle2,
@@ -11,15 +13,19 @@ import {
   Crown,
   Dumbbell,
   Flame,
+  Footprints,
   Gauge,
+  HeartPulse,
   LayoutDashboard,
   LoaderCircle,
   Menu,
   MoreHorizontal,
+  MoveUp,
   Phone,
   RefreshCw,
   Repeat2,
   Radio,
+  Rows3,
   Search,
   Settings,
   UserCog,
@@ -29,6 +35,8 @@ import {
   X,
 } from 'lucide-react';
 import './App.css';
+import { getEquipment } from './api/equipment';
+import { formatDuration, getSessions } from './api/sessions';
 import { getUsers, registerUser } from './api/users';
 import {
   getArduinoErrorMessage,
@@ -45,62 +53,80 @@ const navigation = [
   { label: '설정', icon: Settings, path: '/settings' },
 ];
 
+const equipmentCategoryIcons = {
+  'upper-chest': HeartPulse,
+  'upper-back': Rows3,
+  'upper-shoulder': MoveUp,
+  'upper-arm': BicepsFlexed,
+  lower: Footprints,
+  cardio: Activity,
+};
+
 const initialMembers = [];
 const AUTO_RETRY_DELAY_MS = 800;
 
-const metrics = [
-  { label: '총 세션 수', value: '15', note: '오늘 기록된 세션 수', icon: Users, tone: 'blue' },
-  { label: '총 운동 시간', value: '04:01:00', note: '전체 운동 시간 합계', icon: Clock3, tone: 'indigo' },
-  { label: '총 세트 수', value: '51', note: '전체 세트 수 합계', icon: Dumbbell, tone: 'blue' },
-  { label: '총 반복 수', value: '534', note: '전체 반복 수 합계', icon: Repeat2, tone: 'cyan' },
-  { label: '총 운동 볼륨', value: '20,150', suffix: 'kg', note: '전체 볼륨 합계', icon: Flame, tone: 'orange' },
-];
+function getLocalDateKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
-const equipmentUsage = [
-  { label: 'LAT PULL', value: 3 },
-  { label: 'LEG PRESS', value: 2 },
-  { label: 'CHEST PRESS', value: 2 },
-  { label: 'SEATED ROW', value: 2 },
-  { label: 'LEG EXT', value: 2 },
-  { label: 'SHOULDER PRESS', value: 1 },
-  { label: 'CABLE ROW', value: 2 },
-  { label: 'PULLDOWN', value: 1 },
-  { label: 'PEC DECK', value: 1 },
-  { label: 'SMITH SQUAT', value: 1 },
-];
+function aggregateSessions(sessions, keySelector, valueSelector = () => 1) {
+  const values = new Map();
+  sessions.forEach((session) => {
+    const key = keySelector(session);
+    values.set(key, (values.get(key) || 0) + valueSelector(session));
+  });
+  return [...values.entries()].map(([label, value]) => ({ label, value }));
+}
 
-const hourlySessions = [
-  { label: '06:00', value: 1 },
-  { label: '07:00', value: 3 },
-  { label: '08:00', value: 3 },
-  { label: '09:00', value: 3 },
-  { label: '10:00', value: 2 },
-  { label: '11:00', value: 2 },
-];
+function buildDashboardData(sessions) {
+  const todaySessions = sessions.filter((session) => session.date === getLocalDateKey());
+  const totalDuration = todaySessions.reduce((sum, session) => sum + session.durationSeconds, 0);
+  const totalSets = todaySessions.reduce((sum, session) => sum + session.sets, 0);
+  const totalCount = todaySessions.reduce((sum, session) => sum + session.count, 0);
+  const totalVolume = todaySessions.reduce((sum, session) => sum + session.volume, 0);
 
-const memberVolumes = [
-  { label: 'SOYEON', value: 2100, rank: 1 },
-  { label: 'TAEHO', value: 2000, rank: 2 },
-  { label: 'YUNA', value: 1800, rank: 3 },
-  { label: 'SEUNGMIN', value: 1650 },
-  { label: 'SUNGHO', value: 1500 },
-];
+  const equipmentUsage = aggregateSessions(todaySessions, (session) => session.equipmentName)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 10);
+  const memberVolumes = aggregateSessions(
+    todaySessions,
+    (session) => session.memberName,
+    (session) => session.volume,
+  )
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5)
+    .map((item, index) => ({ ...item, rank: index < 3 ? index + 1 : undefined }));
+  const equipmentVolumes = aggregateSessions(
+    todaySessions,
+    (session) => session.equipmentName,
+    (session) => session.volume,
+  )
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5);
+  const hourlySessions = aggregateSessions(
+    todaySessions,
+    (session) => `${session.startTime.slice(0, 2)}:00`,
+  ).sort((a, b) => a.label.localeCompare(b.label));
 
-const equipmentVolumes = [
-  { label: 'LEG PRESS', value: 4100 },
-  { label: 'CHEST PRESS', value: 2940 },
-  { label: 'SMITH SQUAT', value: 1800 },
-  { label: 'PULLDOWN', value: 1650 },
-  { label: 'SHOULDER PRESS', value: 2160 },
-];
-
-const sessionRows = [
-  ['JIYOUNG', '06:45', '06:59', '00:14', 'LAT PULL', '3', '36', '1,440'],
-  ['MINJUN', '07:05', '07:22', '00:17', 'LEG EXT', '3', '40', '1,200'],
-  ['HYEJIN', '07:25', '07:42', '00:17', 'SEATED ROW', '3', '36', '1,260'],
-  ['DONGHYUN', '07:45', '08:02', '00:17', 'CHEST PRESS', '4', '35', '1,440'],
-  ['SOYEON', '08:05', '08:19', '00:14', 'LEG PRESS', '4', '40', '2,100'],
-];
+  return {
+    metrics: [
+      { label: '총 세션 수', value: todaySessions.length.toLocaleString(), note: '오늘 기록된 세션 수', icon: Users, tone: 'blue' },
+      { label: '총 운동 시간', value: formatDuration(totalDuration), note: '오늘 운동 시간 합계', icon: Clock3, tone: 'indigo' },
+      { label: '총 세트 수', value: totalSets.toLocaleString(), note: '오늘 세트 수 합계', icon: Dumbbell, tone: 'blue' },
+      { label: '총 반복 수', value: totalCount.toLocaleString(), note: '오늘 반복 수 합계', icon: Repeat2, tone: 'cyan' },
+      { label: '총 운동 볼륨', value: totalVolume.toLocaleString(), suffix: 'kg', note: '오늘 운동 볼륨 합계', icon: Flame, tone: 'orange' },
+    ],
+    equipmentUsage,
+    memberVolumes,
+    equipmentVolumes,
+    hourlySessions,
+    recentSessions: sessions.slice(0, 5),
+  };
+}
 
 function PanelTitle({ title, subtitle }) {
   return (
@@ -543,6 +569,267 @@ function MemberManagement({ members, memberListState, onAddMember }) {
   );
 }
 
+function SessionHistory({ sessions, sessionListState }) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [dateFilter, setDateFilter] = useState('');
+  const [sessionPage, setSessionPage] = useState(1);
+  const pageSize = 15;
+
+  const filteredSessions = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return sessions.filter((session) => {
+      const matchesDate = !dateFilter || session.date === dateFilter;
+      const matchesSearch = !keyword || [
+        session.memberName,
+        session.equipmentName,
+        session.gymName,
+      ].some((value) => value.toLowerCase().includes(keyword));
+      return matchesDate && matchesSearch;
+    });
+  }, [dateFilter, searchTerm, sessions]);
+
+  useEffect(() => {
+    setSessionPage(1);
+  }, [dateFilter, searchTerm]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredSessions.length / pageSize));
+  const visibleSessions = filteredSessions.slice(
+    (sessionPage - 1) * pageSize,
+    sessionPage * pageSize,
+  );
+  const totalVolume = sessions.reduce((sum, session) => sum + session.volume, 0);
+  const totalDuration = sessions.reduce((sum, session) => sum + session.durationSeconds, 0);
+
+  return (
+    <div className="session-history-page">
+      <section className="equipment-summary session-history-summary" aria-label="세션 기록 현황">
+        <article>
+          <span className="equipment-summary-icon"><CalendarDays size={20} /></span>
+          <div><small>전체 세션</small><strong>{sessions.length.toLocaleString()}</strong></div>
+        </article>
+        <article>
+          <span className="equipment-summary-icon active"><Clock3 size={20} /></span>
+          <div><small>누적 운동 시간</small><strong>{formatDuration(totalDuration)}</strong></div>
+        </article>
+        <article>
+          <span className="equipment-summary-icon used"><Flame size={20} /></span>
+          <div><small>누적 운동 볼륨</small><strong>{totalVolume.toLocaleString()} kg</strong></div>
+        </article>
+      </section>
+
+      <article className="panel session-history-panel">
+        <div className="equipment-list-header session-history-header">
+          <div>
+            <h2>전체 세션 기록</h2>
+            <p>회원별 운동 기구, 시간, 세트와 운동 볼륨을 확인합니다.</p>
+          </div>
+          <div className="session-history-controls">
+            <input
+              type="date"
+              value={dateFilter}
+              onChange={(event) => setDateFilter(event.target.value)}
+              aria-label="세션 날짜 필터"
+            />
+            <label className="search-box equipment-search">
+              <Search size={15} />
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="회원 또는 기구 검색"
+                aria-label="세션 검색"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="table-scroll session-history-table-scroll">
+          <table className="session-history-table">
+            <thead>
+              <tr>
+                <th>날짜</th>
+                <th>회원</th>
+                <th>기구</th>
+                <th>운동 시간</th>
+                <th>세트</th>
+                <th>반복</th>
+                <th>중량</th>
+                <th>볼륨</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleSessions.map((session) => (
+                <tr key={session.id}>
+                  <td><strong>{session.date}</strong><small>{session.startTime}</small></td>
+                  <td><strong>{session.memberName}</strong><small>{session.gymName}</small></td>
+                  <td><strong>{session.equipmentName}</strong></td>
+                  <td>{session.duration}</td>
+                  <td>{session.sets.toLocaleString()}</td>
+                  <td>{session.count.toLocaleString()}</td>
+                  <td>{session.weight.toLocaleString()} kg</td>
+                  <td><strong>{session.volume.toLocaleString()} kg</strong></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {visibleSessions.length === 0 && (
+            <div className="empty-search">
+              {sessionListState.loading && '세션 기록을 불러오는 중입니다.'}
+              {!sessionListState.loading && sessionListState.error && sessionListState.error}
+              {!sessionListState.loading && !sessionListState.error && (
+                searchTerm.trim() || dateFilter
+                  ? '조건에 맞는 세션 기록이 없습니다.'
+                  : '등록된 세션 기록이 없습니다.'
+              )}
+            </div>
+          )}
+        </div>
+
+        {filteredSessions.length > 0 && (
+          <div className="pagination">
+            <button
+              disabled={sessionPage === 1}
+              onClick={() => setSessionPage((current) => Math.max(1, current - 1))}
+              aria-label="이전 세션 페이지"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span><strong>{sessionPage}</strong> / {pageCount}</span>
+            <button
+              disabled={sessionPage === pageCount}
+              onClick={() => setSessionPage((current) => Math.min(pageCount, current + 1))}
+              aria-label="다음 세션 페이지"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        )}
+      </article>
+    </div>
+  );
+}
+
+function EquipmentManagement({ equipment, equipmentListState }) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+
+  const categories = useMemo(
+    () => [...new Map(equipment.map((item) => [item.category, item.categoryLabel])).entries()],
+    [equipment],
+  );
+  const filteredEquipment = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return equipment.filter((item) => {
+      const matchesCategory = categoryFilter === 'all' || item.category === categoryFilter;
+      const matchesSearch = !keyword || [item.name, item.categoryLabel]
+        .some((value) => value.toLowerCase().includes(keyword));
+      return matchesCategory && matchesSearch;
+    });
+  }, [categoryFilter, equipment, searchTerm]);
+
+  const activeCount = equipment.filter((item) => item.status === '운영 중').length;
+  const usedCount = equipment.filter((item) => item.lastUsed !== '이용 기록 없음').length;
+
+  return (
+    <div className="equipment-page">
+      <section className="equipment-summary" aria-label="운동기구 현황">
+        <article>
+          <span className="equipment-summary-icon"><Dumbbell size={20} /></span>
+          <div><small>전체 기구</small><strong>{equipment.length}</strong></div>
+        </article>
+        <article>
+          <span className="equipment-summary-icon active"><CheckCircle2 size={20} /></span>
+          <div><small>운영 중</small><strong>{activeCount}</strong></div>
+        </article>
+        <article>
+          <span className="equipment-summary-icon used"><Clock3 size={20} /></span>
+          <div><small>이용 기록 있음</small><strong>{usedCount}</strong></div>
+        </article>
+      </section>
+
+      <article className="panel equipment-list-panel">
+        <div className="equipment-list-header">
+          <div>
+            <h2>운동기구 목록</h2>
+            <p>등록된 기구의 분류, 최근 이용 시간과 운영 상태를 확인합니다.</p>
+          </div>
+          <div className="equipment-controls">
+            <select
+              value={categoryFilter}
+              onChange={(event) => setCategoryFilter(event.target.value)}
+              aria-label="기구 카테고리 필터"
+            >
+              <option value="all">전체 카테고리</option>
+              {categories.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+            <label className="search-box equipment-search">
+              <Search size={15} />
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="기구명 검색"
+                aria-label="운동기구 검색"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="table-scroll equipment-table-scroll">
+          <table className="equipment-table">
+            <thead>
+              <tr>
+                <th>기구명</th>
+                <th>카테고리</th>
+                <th>최근 이용</th>
+                <th>상태</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredEquipment.map((item) => {
+                const CategoryIcon = equipmentCategoryIcons[item.category] || Dumbbell;
+                return (
+                  <tr key={item.id}>
+                    <td>
+                      <div className="equipment-name">
+                        <span
+                          className={`equipment-category-icon ${item.category}`}
+                          aria-label={`${item.categoryLabel} 아이콘`}
+                        >
+                          <CategoryIcon size={18} />
+                        </span>
+                        <strong>{item.name}</strong>
+                      </div>
+                    </td>
+                    <td><span className={`category-pill ${item.category}`}>{item.categoryLabel}</span></td>
+                    <td><span className="equipment-last-used">{item.lastUsed}</span></td>
+                    <td>
+                      <span className={`status-pill ${item.status === '운영 중' ? 'active' : 'warning'}`}>
+                        {item.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {filteredEquipment.length === 0 && (
+            <div className="empty-search">
+              {equipmentListState.loading && '운동기구 목록을 불러오는 중입니다.'}
+              {!equipmentListState.loading && equipmentListState.error && equipmentListState.error}
+              {!equipmentListState.loading && !equipmentListState.error && (
+                searchTerm.trim() || categoryFilter !== 'all'
+                  ? '조건에 맞는 운동기구가 없습니다.'
+                  : '등록된 운동기구가 없습니다.'
+              )}
+            </div>
+          )}
+        </div>
+      </article>
+    </div>
+  );
+}
+
 function PlaceholderPage({ title }) {
   return (
     <div className="placeholder-page panel">
@@ -561,13 +848,17 @@ function App() {
 
   const [currentPath, setCurrentPath] = useState(getCurrentPath);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [page, setPage] = useState(1);
   const [lastUpdated, setLastUpdated] = useState('14:30');
   const [refreshing, setRefreshing] = useState(false);
   const [members, setMembers] = useState(initialMembers);
   const [memberListState, setMemberListState] = useState({ loading: false, error: '' });
+  const [equipment, setEquipment] = useState([]);
+  const [equipmentListState, setEquipmentListState] = useState({ loading: false, error: '' });
+  const [sessions, setSessions] = useState([]);
+  const [sessionListState, setSessionListState] = useState({ loading: false, error: '' });
 
   const activeItem = navigation.find((item) => item.path === currentPath) || navigation[0];
+  const dashboardData = useMemo(() => buildDashboardData(sessions), [sessions]);
 
   useEffect(() => {
     if (window.location.pathname === '/') {
@@ -593,6 +884,48 @@ function App() {
       .catch((error) => {
         if (!active) return;
         setMemberListState({ loading: false, error: error.message });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentPath]);
+
+  useEffect(() => {
+    if (currentPath !== '/equipment') return undefined;
+
+    let active = true;
+    setEquipmentListState({ loading: true, error: '' });
+    getEquipment()
+      .then((items) => {
+        if (!active) return;
+        setEquipment(items);
+        setEquipmentListState({ loading: false, error: '' });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setEquipmentListState({ loading: false, error: error.message });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentPath]);
+
+  useEffect(() => {
+    if (!['/dashboard', '/sessions'].includes(currentPath)) return undefined;
+
+    let active = true;
+    setSessionListState({ loading: true, error: '' });
+    getSessions()
+      .then((items) => {
+        if (!active) return;
+        setSessions(items);
+        setSessionListState({ loading: false, error: '' });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setSessionListState({ loading: false, error: error.message });
       });
 
     return () => {
@@ -657,7 +990,7 @@ function App() {
 
         <div className="sidebar-status">
           <span className="status-label">데이터 기준</span>
-          <strong>2026-07-24 (오늘)</strong>
+          <strong>{getLocalDateKey()} (오늘)</strong>
           <button onClick={refreshData} disabled={refreshing}>
             <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
             {lastUpdated} 기준 새로고침
@@ -679,7 +1012,7 @@ function App() {
             </div>
           </div>
           <div className="topbar-tools">
-            <button className="date-button"><CalendarDays size={15} /> 2026-07-24 <span>(오늘)</span></button>
+            <button className="date-button"><CalendarDays size={15} /> {getLocalDateKey()} <span>(오늘)</span></button>
             <button className="profile-button">
               <span className="avatar"><UserCog size={18} /></span>
               <span><strong>관리자</strong><small>운영자</small></span>
@@ -691,8 +1024,11 @@ function App() {
         <div className="dashboard-content">
           {currentPath === '/dashboard' && (
             <>
+              {sessionListState.error && (
+                <div className="data-error" role="alert">{sessionListState.error}</div>
+              )}
               <section className="metrics-grid" aria-label="오늘의 주요 지표">
-                {metrics.map(({ label, value, suffix, note, icon: Icon, tone }) => (
+                {dashboardData.metrics.map(({ label, value, suffix, note, icon: Icon, tone }) => (
                   <article className="metric-card" key={label}>
                     <div className={`metric-icon ${tone}`}><Icon size={22} /></div>
                     <div>
@@ -707,29 +1043,46 @@ function App() {
               <section className="dashboard-grid">
                 <article className="panel">
                   <PanelTitle title="기구별 사용량" subtitle="각 기구에서 기록된 세션 수" />
-                  <VerticalChart data={equipmentUsage} max={4} />
+                  <VerticalChart
+                    data={dashboardData.equipmentUsage}
+                    max={Math.max(4, ...dashboardData.equipmentUsage.map((item) => item.value))}
+                  />
                 </article>
 
                 <article className="panel">
                   <PanelTitle title="회원별 총 볼륨 순위" subtitle="회원별 총 운동 볼륨 (kg)" />
-                  <HorizontalChart data={memberVolumes} max={2300} ranked />
+                  <HorizontalChart
+                    data={dashboardData.memberVolumes}
+                    max={Math.max(1, ...dashboardData.memberVolumes.map((item) => item.value))}
+                    ranked
+                  />
                 </article>
 
                 <article className="panel">
                   <PanelTitle title="시간대별 세션 수" subtitle="시간대별 기록된 세션 수" />
-                  <VerticalChart data={hourlySessions} color="purple" max={4} />
+                  <VerticalChart
+                    data={dashboardData.hourlySessions}
+                    color="purple"
+                    max={Math.max(4, ...dashboardData.hourlySessions.map((item) => item.value))}
+                  />
                 </article>
 
                 <article className="panel">
                   <PanelTitle title="기구별 총 볼륨" subtitle="각 기구에서 발생한 총 운동 볼륨" />
-                  <HorizontalChart data={equipmentVolumes} color="blue" max={4500} />
+                  <HorizontalChart
+                    data={dashboardData.equipmentVolumes}
+                    color="blue"
+                    max={Math.max(1, ...dashboardData.equipmentVolumes.map((item) => item.value))}
+                  />
                 </article>
               </section>
 
               <section className="panel sessions-panel">
                 <div className="table-header">
                   <PanelTitle title="상세 운동 기록" subtitle="최근 기록된 운동 세션 목록" />
-                  <button className="view-all">전체 보기 <ChevronRight size={14} /></button>
+                  <button className="view-all" onClick={() => navigate('/sessions')}>
+                    전체 보기 <ChevronRight size={14} />
+                  </button>
                 </div>
                 <div className="table-scroll">
                   <table>
@@ -741,25 +1094,27 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {sessionRows.map((row) => (
-                        <tr key={`${row[0]}-${row[1]}`}>
-                          {row.map((cell, index) => <td key={`${cell}-${index}`}>{cell}</td>)}
+                      {dashboardData.recentSessions.map((session) => (
+                        <tr key={session.id}>
+                          <td>{session.memberName}</td>
+                          <td>{session.startTime}</td>
+                          <td>{session.finishTime}</td>
+                          <td>{session.duration}</td>
+                          <td>{session.equipmentName}</td>
+                          <td>{session.sets.toLocaleString()}</td>
+                          <td>{session.count.toLocaleString()}</td>
+                          <td>{session.volume.toLocaleString()}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                <div className="pagination">
-                  <button disabled={page === 1} onClick={() => setPage(Math.max(1, page - 1))} aria-label="이전 페이지">
-                    <ChevronLeft size={14} />
-                  </button>
-                  <span><strong>{page}</strong> / 3</span>
-                  <button disabled={page === 3} onClick={() => setPage(Math.min(3, page + 1))} aria-label="다음 페이지">
-                    <ChevronRight size={14} />
-                  </button>
-                </div>
               </section>
             </>
+          )}
+
+          {currentPath === '/sessions' && (
+            <SessionHistory sessions={sessions} sessionListState={sessionListState} />
           )}
 
           {currentPath === '/members' && (
@@ -770,7 +1125,16 @@ function App() {
             />
           )}
 
-          {!['/dashboard', '/members'].includes(currentPath) && <PlaceholderPage title={activeItem.label} />}
+          {currentPath === '/equipment' && (
+            <EquipmentManagement
+              equipment={equipment}
+              equipmentListState={equipmentListState}
+            />
+          )}
+
+          {!['/dashboard', '/sessions', '/members', '/equipment'].includes(currentPath) && (
+            <PlaceholderPage title={activeItem.label} />
+          )}
         </div>
       </main>
     </div>
