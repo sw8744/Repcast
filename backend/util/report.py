@@ -80,9 +80,31 @@ def _register_fonts():
         pdfmetrics.registerFont(TTFont("RepCast-Bold", bold_path or regular_path))
         return "RepCast-Regular", "RepCast-Bold"
 
-    pdfmetrics.registerFont(UnicodeCIDFont("HYSMyeongJo-Medium"))
-    pdfmetrics.registerFont(UnicodeCIDFont("HYGoThic-Medium"))
-    return "HYSMyeongJo-Medium", "HYGoThic-Medium"
+    available_cid_fonts = []
+    for font_name in ("HYSMyeongJo-Medium", "HYGothic-Medium"):
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+            available_cid_fonts.append(font_name)
+        except KeyError:
+            continue
+
+    if not available_cid_fonts:
+        raise RuntimeError(
+            "사용 가능한 한글 글꼴이 없습니다. "
+            "REPORT_FONT_PATH에 한글 TTF 파일 경로를 설정해 주세요."
+        )
+
+    regular_font = (
+        "HYSMyeongJo-Medium"
+        if "HYSMyeongJo-Medium" in available_cid_fonts
+        else available_cid_fonts[0]
+    )
+    bold_font = (
+        "HYGothic-Medium"
+        if "HYGothic-Medium" in available_cid_fonts
+        else regular_font
+    )
+    return regular_font, bold_font
 
 
 FONT_REGULAR, FONT_BOLD = _register_fonts()

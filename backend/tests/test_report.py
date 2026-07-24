@@ -1,10 +1,11 @@
 import datetime
 import io
 import unittest
+from unittest.mock import MagicMock, patch
 
 from pypdf import PdfReader
 
-from util.report import _build_metrics, generate_report_pdf
+from util.report import _build_metrics, _register_fonts, generate_report_pdf
 
 
 def sample_source():
@@ -56,6 +57,20 @@ def sample_source():
 
 
 class ReportTest(unittest.TestCase):
+    def test_font_fallback_reuses_available_korean_cid_font(self):
+        def cid_font(name):
+            if name == "HYGothic-Medium":
+                raise KeyError(name)
+            return MagicMock()
+
+        with patch("util.report.os.path.isfile", return_value=False), patch(
+            "util.report.UnicodeCIDFont", side_effect=cid_font
+        ), patch("util.report.pdfmetrics.registerFont"):
+            regular, bold = _register_fonts()
+
+        self.assertEqual(regular, "HYSMyeongJo-Medium")
+        self.assertEqual(bold, "HYSMyeongJo-Medium")
+
     def test_metrics_are_personalized_from_sessions(self):
         metrics = _build_metrics(sample_source())
 
