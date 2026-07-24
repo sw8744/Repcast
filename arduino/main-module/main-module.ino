@@ -64,6 +64,11 @@ enum UserLookupResult
 #define LED_ON      HIGH
 #define LED_OFF     LOW
 
+// Digital Push Button Module V2.0: 눌렀을 때 HIGH
+#define ACTION_BUTTON_PIN 17   // S04: REST, S05: NEXT
+#define END_BUTTON_PIN    34   // S05: END
+#define BUTTON_PRESSED    HIGH
+
 const byte RFID_DATA_BLOCK = 4;
 const byte RFID_BLOCK_SIZE = 16;
 
@@ -146,8 +151,8 @@ UltrasonicState ultrasonicState = ULTRASONIC_READING;
 bool lifted = false;
 
 int ultrasonicDistanceMm = -1;
-const int NEAR_DISTANCE_MM = 50;    // 50mm 이하: 가까움
-const int FAR_DISTANCE_MM = 200;    // 200mm 이상: 멀어짐
+const int NEAR_DISTANCE_MM = 240;   // 240mm 이하: 가까움
+const int FAR_DISTANCE_MM = 300;    // 300mm 이상: 멀어짐
 const int MOVE_CONFIRM_COUNT = 2;
 const int RETURN_CONFIRM_COUNT = 2;
 
@@ -165,9 +170,6 @@ const unsigned long ULTRASONIC_ECHO_TIMEOUT_US = 25000;
 unsigned long lastUltrasonicPrintTime = 0;
 const unsigned long ULTRASONIC_PRINT_INTERVAL_MS = 200;
 
-unsigned long lastUltrasonicScreenTime = 0;
-const unsigned long ULTRASONIC_SCREEN_INTERVAL_MS = 200;
-
 //================================================
 // S03 -> S04 지연
 //================================================
@@ -179,6 +181,17 @@ unsigned long weightTime = 0;
 //================================================
 unsigned long summaryStartTime = 0;
 const unsigned long SUMMARY_DISPLAY_MS = 5000;
+
+//================================================
+// 물리 버튼 상태
+//================================================
+const unsigned long BUTTON_DEBOUNCE_MS = 50;
+bool actionButtonRawState = false;
+bool actionButtonStableState = false;
+bool endButtonRawState = false;
+bool endButtonStableState = false;
+unsigned long actionButtonChangedTime = 0;
+unsigned long endButtonChangedTime = 0;
 
 //================================================
 // 터치 상태
@@ -221,14 +234,13 @@ bool isValidStoredUid(const String &uid);
 void initUltrasonicSensor();
 bool readUltrasonicDistance(int &distanceMm);
 void resetRepDetector();
-void drawUltrasonicLiveStatus();
 
 void readRFID();
 bool readCardUid(String &cardUid);
 void checkHall();
 void checkWeightDelay();
 void checkRep();
-void checkTouches();
+void checkPhysicalButtons();
 void checkSummaryDelay();
 
 int weightToIndex(int w);
@@ -892,6 +904,8 @@ void setup()
     pinMode(HALL1, INPUT_PULLUP);
     pinMode(HALL2, INPUT_PULLUP);
     pinMode(HALL3, INPUT_PULLUP);
+    pinMode(ACTION_BUTTON_PIN, INPUT);
+    pinMode(END_BUTTON_PIN, INPUT);
 
     pinMode(TFT_BL, OUTPUT);
     pinMode(BUZZER_PIN, OUTPUT);
@@ -917,43 +931,6 @@ void setup()
     tft.setCursor(10, 10);
     tft.println("BOOTING...");
     releaseSPI();
-
-    // 터치는 회전 기능을 사용하지 않고 RAW 값을 직접 보정해서 사용
-    releaseSPI();
-    ts.begin();
-    ts.setRotation(0);
-    releaseSPI();
-
-    prefs.begin("RepCast", false);
-    loadTouchCalibration();
-
-    // 최초 실행 시 자동 보정
-    // 다시 보정하려면 전원을 켤 때 화면을 누른 상태로 유지
-    bool forceCalibration = false;
-    unsigned long holdStart = millis();
-
-    while (millis() - holdStart < 900)
-    {
-        releaseSPI();
-
-        if (ts.touched())
-        {
-            TS_Point point = ts.getPoint();
-            releaseSPI();
-
-            if (point.z >= TOUCH_PRESSURE_MIN)
-            {
-                forceCalibration = true;
-                break;
-            }
-        }
-
-        releaseSPI();
-        delay(10);
-    }
-
-    if (!touchCalibrated || forceCalibration)
-        calibrateTouch();
 
     releaseSPI();
     tft.fillScreen(ILI9341_BLACK);
@@ -987,7 +964,7 @@ void loop()
     checkHall();
     checkWeightDelay();
     checkRep();
-    checkTouches();
+    checkPhysicalButtons();
     checkSummaryDelay();
 
     delay(2);
@@ -1096,60 +1073,6 @@ bool readUltrasonicDistance(int &distanceMm)
     }
 
     return true;
-}
-
-void drawUltrasonicLiveStatus()
-{
-    if (screen != S04_ACTIVE)
-        return;
-
-    if (millis() - lastUltrasonicScreenTime <
-        ULTRASONIC_SCREEN_INTERVAL_MS)
-        return;
-
-    lastUltrasonicScreenTime = millis();
-
-    releaseSPI();
-    keepBacklightOn();
-
-    tft.fillRect(5, 135, 310, 25, ILI9341_BLACK);
-    tft.setTextSize(2);
-    tft.setCursor(5, 140);
-
-    if (ultrasonicState == ULTRASONIC_TIMEOUT)
-    {
-        tft.setTextColor(ILI9341_YELLOW);
-        tft.print("US: NO ECHO");
-    }
-    else if (ultrasonicDistanceMm < 0)
-    {
-        tft.setTextColor(ILI9341_WHITE);
-        tft.print("US: READING...");
-    }
-    else if (ultrasonicDistanceMm <= NEAR_DISTANCE_MM)
-    {
-        tft.setTextColor(ILI9341_GREEN);
-        tft.print("US: ");
-        tft.print(ultrasonicDistanceMm);
-        tft.print("mm NEAR");
-    }
-    else if (ultrasonicDistanceMm >= FAR_DISTANCE_MM)
-    {
-        tft.setTextColor(ILI9341_CYAN);
-        tft.print("US: ");
-        tft.print(ultrasonicDistanceMm);
-        tft.print("mm FAR");
-    }
-    else
-    {
-        tft.setTextColor(ILI9341_WHITE);
-        tft.print("US: ");
-        tft.print(ultrasonicDistanceMm);
-        tft.print("mm");
-    }
-
-    tft.setTextColor(ILI9341_WHITE);
-    releaseSPI();
 }
 
 //================================================
@@ -1435,8 +1358,6 @@ void checkRep()
     if (screen != S04_ACTIVE)
         return;
 
-    drawUltrasonicLiveStatus();
-
     int distance = 0;
 
     if (!readUltrasonicDistance(distance))
@@ -1444,7 +1365,7 @@ void checkRep()
 
     if (!lifted)
     {
-        // 200mm 이상 멀어진 상태가 연속으로 확인되면 동작 시작
+        // 300mm 이상 멀어진 상태가 연속으로 확인되면 동작 시작
         if (distance >= FAR_DISTANCE_MM)
         {
             moveConfirmCount++;
@@ -1464,7 +1385,7 @@ void checkRep()
     }
     else
     {
-        // 멀어졌다가 50mm 이하로 가까워지면 1회 증가
+        // 멀어졌다가 240mm 이하로 가까워지면 1회 증가
         if (distance <= NEAR_DISTANCE_MM)
         {
             returnConfirmCount++;
@@ -1534,12 +1455,6 @@ void drawTapCard()
     tft.setTextSize(3);
     tft.setCursor(95, 185);
     tft.print("RepCast");
-
-    tft.setTextSize(2);
-    tft.setCursor(10, 220);
-
-    tft.setTextColor(ILI9341_GREEN);
-    tft.print("ULTRASONIC READY");
 
     tft.setTextColor(ILI9341_WHITE);
 
@@ -1660,14 +1575,6 @@ void drawActiveSet(int selectedWeight, int reps, int currentSet)
     tft.print("REPS");
 
     drawButton(BTN_REST, "REST");
-
-    // 초음파 거리 상태는 버튼 위쪽에 실시간으로 표시
-    tft.fillRect(5, 135, 310, 25, ILI9341_BLACK);
-    tft.setTextSize(2);
-    tft.setCursor(5, 140);
-
-    tft.setTextColor(ILI9341_WHITE);
-    tft.print("US: READING...");
 
     tft.setTextColor(ILI9341_WHITE);
     releaseSPI();
@@ -1931,19 +1838,46 @@ bool isInsideButton(int x, int y, const ButtonRect &button)
            y < button.y + button.h;
 }
 
-void checkTouches()
+void checkPhysicalButtons()
 {
-    if (screen != S04_ACTIVE && screen != S05_REST)
-        return;
+    unsigned long now = millis();
+    bool actionRaw =
+        digitalRead(ACTION_BUTTON_PIN) == BUTTON_PRESSED;
+    bool endRaw =
+        digitalRead(END_BUTTON_PIN) == BUTTON_PRESSED;
 
-    int touchX;
-    int touchY;
+    if (actionRaw != actionButtonRawState)
+    {
+        actionButtonRawState = actionRaw;
+        actionButtonChangedTime = now;
+    }
 
-    if (!getTouch(touchX, touchY))
-        return;
+    if (endRaw != endButtonRawState)
+    {
+        endButtonRawState = endRaw;
+        endButtonChangedTime = now;
+    }
 
-    // S04의 REST 버튼 -> S05
-    if (screen == S04_ACTIVE && isInsideButton(touchX, touchY, BTN_REST))
+    bool actionPressedEvent = false;
+    bool endPressedEvent = false;
+
+    if (now - actionButtonChangedTime >= BUTTON_DEBOUNCE_MS &&
+        actionButtonStableState != actionButtonRawState)
+    {
+        actionButtonStableState = actionButtonRawState;
+        actionPressedEvent = actionButtonStableState;
+    }
+
+    if (now - endButtonChangedTime >= BUTTON_DEBOUNCE_MS &&
+        endButtonStableState != endButtonRawState)
+    {
+        endButtonStableState = endButtonRawState;
+        endPressedEvent = endButtonStableState;
+    }
+
+    // S04에서는 두 버튼 모두 REST -> S05
+    if (screen == S04_ACTIVE &&
+        (actionPressedEvent || endPressedEvent))
     {
         commitSetRep();
         lifted = false;
@@ -1961,8 +1895,8 @@ void checkTouches()
     if (screen != S05_REST)
         return;
 
-    // S05의 NEXT 버튼 -> 다음 세트 S04
-    if (isInsideButton(touchX, touchY, BTN_NEXT))
+    // 버튼 1: S05의 NEXT -> 다음 세트 S04
+    if (actionPressedEvent)
     {
         setNum++;
 
@@ -1978,8 +1912,8 @@ void checkTouches()
         return;
     }
 
-    // S05의 END 버튼 -> S06
-    if (isInsideButton(touchX, touchY, BTN_END))
+    // 버튼 2: S05의 END -> S06
+    if (endPressedEvent)
     {
         Serial.println("========== MEMBER WORKOUT SUMMARY ==========");
         Serial.print("LAST WEIGHT = ");
