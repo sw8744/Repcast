@@ -2,12 +2,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import { getEquipment } from './api/equipment';
 import { getSessions } from './api/sessions';
-import { getUsers, registerUser } from './api/users';
+import { getUsers, registerUser, sendReportsToAllUsers } from './api/users';
 import { __serialCommands, __setAuthFailures } from './serial/rfidSerial';
 
 jest.mock('./api/users', () => ({
   getUsers: jest.fn(),
   registerUser: jest.fn(),
+  sendReportsToAllUsers: jest.fn(),
 }));
 
 jest.mock('./api/equipment', () => ({
@@ -84,6 +85,13 @@ beforeEach(() => {
   getSessions.mockResolvedValue([]);
   getUsers.mockResolvedValue([]);
   registerUser.mockResolvedValue('1234567890abcdef');
+  sendReportsToAllUsers.mockResolvedValue({
+    status: 'sent',
+    total: 1,
+    sent: 1,
+    failed: 0,
+    failures: [],
+  });
 });
 
 function fillRegistrationForm() {
@@ -103,6 +111,12 @@ test('/dashboard에서 RepCast 관리자 대시보드를 표시한다', async ()
 });
 
 test('/dashboard에 실제 세션 API 집계를 표시한다', async () => {
+  const now = new Date();
+  const localDate = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('-');
   getSessions.mockResolvedValue([{
     id: 'session-1',
     uid: 'user-1',
@@ -116,9 +130,9 @@ test('/dashboard에 실제 세션 API 집계를 표시한다', async () => {
     sets: 3,
     weight: 40,
     volume: 1440,
-    start: `${new Date().toISOString().slice(0, 10)}T10:00:00`,
-    finish: `${new Date().toISOString().slice(0, 10)}T10:14:30`,
-    date: new Date().toISOString().slice(0, 10),
+    start: `${localDate}T10:00:00`,
+    finish: `${localDate}T10:14:30`,
+    date: localDate,
     startTime: '10:00:00',
     finishTime: '10:14:30',
     durationSeconds: 870,
@@ -204,6 +218,31 @@ test('/user API 회원의 전화번호와 이메일을 연락처에 표시한다
   expect(screen.getByText('test@test.com')).toBeInTheDocument();
   expect(screen.getByText('2026-07-30 18:20')).toBeInTheDocument();
   expect(getUsers).toHaveBeenCalledTimes(1);
+});
+
+test('/members에서 모든 회원에게 기록지를 발송한다', async () => {
+  getUsers.mockResolvedValue([{
+    id: 'member-1',
+    name: '테스트 회원',
+    phone: '01012345678',
+    email: 'test@test.com',
+    plan: '1개월 이용권',
+    startDate: '2026-07-24',
+    expireDate: '2026-08-31',
+    lastUsed: '2026-07-30 18:20',
+    status: '이용 중',
+  }]);
+  window.history.pushState({}, '', '/members');
+  render(<App />);
+
+  const sendButton = await screen.findByRole('button', {
+    name: '모든 회원 기록지 보내기',
+  });
+  fireEvent.click(sendButton);
+
+  await waitFor(() => expect(sendReportsToAllUsers).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('전체 회원 1명에게 기록지를 발송했습니다.'))
+    .toBeInTheDocument();
 });
 
 test('/equipment API 운동기구를 기구 관리 페이지에 표시한다', async () => {

@@ -18,6 +18,7 @@ import {
   HeartPulse,
   LayoutDashboard,
   LoaderCircle,
+  Mail,
   Menu,
   MoreHorizontal,
   MoveUp,
@@ -37,7 +38,7 @@ import {
 import './App.css';
 import { getEquipment } from './api/equipment';
 import { formatDuration, getSessions } from './api/sessions';
-import { getUsers, registerUser } from './api/users';
+import { getUsers, registerUser, sendReportsToAllUsers } from './api/users';
 import {
   getArduinoErrorMessage,
   isRetryableArduinoError,
@@ -186,6 +187,10 @@ function MemberManagement({ members, memberListState, onAddMember }) {
   const retryControllerRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [reportEmailState, setReportEmailState] = useState({
+    status: 'idle',
+    message: '',
+  });
   const [serialState, setSerialState] = useState(RfidSerialClient.isSupported() ? 'disconnected' : 'unsupported');
   const [workflow, setWorkflow] = useState({ stage: 'idle', message: 'Arduino를 연결하면 회원 등록을 시작할 수 있습니다.' });
   const [pendingUid, setPendingUid] = useState('');
@@ -367,6 +372,27 @@ function MemberManagement({ members, memberListState, onAddMember }) {
     }
   };
 
+  const sendAllReports = async () => {
+    setReportEmailState({
+      status: 'sending',
+      message: '회원별 기록지를 생성해 Gmail로 발송하고 있습니다.',
+    });
+    try {
+      const result = await sendReportsToAllUsers();
+      setReportEmailState({
+        status: result.failed ? 'warning' : 'success',
+        message: result.failed
+          ? `전체 ${result.total}명 중 ${result.sent}명에게 발송했고, ${result.failed}명은 실패했습니다.`
+          : `전체 회원 ${result.sent}명에게 기록지를 발송했습니다.`,
+      });
+    } catch (error) {
+      setReportEmailState({
+        status: 'error',
+        message: error.message,
+      });
+    }
+  };
+
   return (
     <div className="members-page">
       {successMessage && (
@@ -499,9 +525,28 @@ function MemberManagement({ members, memberListState, onAddMember }) {
 
         <article className="panel member-list-panel">
           <div className="member-list-header">
-            <div>
-              <h3>회원 목록</h3>
-              <p>등록이 완료된 회원을 표시합니다.</p>
+            <div className="member-list-title">
+              <div>
+                <h3>회원 목록</h3>
+                <p>등록이 완료된 회원을 표시합니다.</p>
+              </div>
+              <button
+                className="report-email-button"
+                type="button"
+                onClick={sendAllReports}
+                disabled={
+                  members.length === 0
+                  || memberListState.loading
+                  || reportEmailState.status === 'sending'
+                }
+              >
+                {reportEmailState.status === 'sending'
+                  ? <LoaderCircle className="spin" size={15} />
+                  : <Mail size={15} />}
+                {reportEmailState.status === 'sending'
+                  ? '기록지 발송 중'
+                  : '모든 회원 기록지 보내기'}
+              </button>
             </div>
             <div className="member-summary">
               <span><strong>{members.length}</strong> 전체 회원</span>
@@ -517,6 +562,20 @@ function MemberManagement({ members, memberListState, onAddMember }) {
               />
             </label>
           </div>
+
+          {reportEmailState.message && (
+            <div
+              className={`report-email-result ${reportEmailState.status}`}
+              role={reportEmailState.status === 'error' ? 'alert' : 'status'}
+            >
+              {reportEmailState.status === 'sending'
+                ? <LoaderCircle className="spin" size={15} />
+                : reportEmailState.status === 'success'
+                  ? <CheckCircle2 size={15} />
+                  : <Mail size={15} />}
+              <span>{reportEmailState.message}</span>
+            </div>
+          )}
 
           <div className="table-scroll member-table-scroll">
             <table className="member-table">

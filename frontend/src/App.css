@@ -1021,10 +1021,72 @@ tbody tr:hover {
 
 .member-list-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
   padding: 18px 18px 13px;
+}
+
+.member-list-title {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.report-email-button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 13px;
+  color: #fff;
+  border: 1px solid #168454;
+  border-radius: 8px;
+  background: #168f58;
+  box-shadow: 0 4px 10px rgba(22, 143, 88, .18);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.report-email-button:hover:not(:disabled) {
+  background: #107b4a;
+}
+
+.report-email-button:disabled {
+  opacity: .55;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.report-email-result {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 18px 13px;
+  padding: 9px 11px;
+  color: #176b5b;
+  border: 1px solid #b9e2d0;
+  border-radius: 7px;
+  background: #edf9f3;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.report-email-result.warning {
+  color: #8a5c15;
+  border-color: #ead09d;
+  background: #fff8e9;
+}
+
+.report-email-result.error {
+  color: #a34545;
+  border-color: #efcaca;
+  background: #fff0f0;
 }
 
 .search-box {
@@ -1679,6 +1741,15 @@ tbody tr:hover {
   .member-list-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .member-list-title {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-email-button {
+    width: 100%;
   }
 
   .equipment-summary {

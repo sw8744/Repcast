@@ -107,3 +107,36 @@ export async function registerUser({ name, phone, email, plan }) {
 
   return body.uid;
 }
+
+export async function sendReportsToAllUsers() {
+  const response = await fetch(`${getApiBaseUrl()}/report/email/all`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '기록지 이메일 발송에 실패했습니다.'));
+  }
+
+  const body = await response.json();
+  const total = Number(body.total);
+  const sent = Number(body.sent);
+  const failed = Number(body.failed);
+  if (
+    !Number.isInteger(total)
+    || !Number.isInteger(sent)
+    || !Number.isInteger(failed)
+    || total < 0
+    || sent < 0
+    || failed < 0
+    || sent + failed !== total
+  ) {
+    throw new Error('서버에서 유효한 이메일 발송 결과를 받지 못했습니다.');
+  }
+
+  return {
+    status: String(body.status || ''),
+    total,
+    sent,
+    failed,
+    failures: Array.isArray(body.failures) ? body.failures : [],
+  };
+}

@@ -1,4 +1,4 @@
-import { getUsers, registerUser } from './users';
+import { getUsers, registerUser, sendReportsToAllUsers } from './users';
 
 beforeEach(() => {
   process.env.REACT_APP_API_ADDR = 'http://localhost:8000/';
@@ -98,4 +98,38 @@ test('010으로 시작하지 않는 전화번호를 거부한다', async () => {
     email: 'member@example.com',
     plan: '3개월 이용권',
   })).rejects.toThrow('010으로 시작');
+});
+
+test('모든 회원 기록지 이메일 발송 API를 호출한다', async () => {
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      status: 'partial',
+      total: 3,
+      sent: 2,
+      failed: 1,
+      failures: [{ uid: 'member-3', reason: '등록된 이메일 주소가 없습니다.' }],
+    }),
+  });
+
+  await expect(sendReportsToAllUsers()).resolves.toEqual({
+    status: 'partial',
+    total: 3,
+    sent: 2,
+    failed: 1,
+    failures: [{ uid: 'member-3', reason: '등록된 이메일 주소가 없습니다.' }],
+  });
+  expect(global.fetch).toHaveBeenCalledWith(
+    'http://localhost:8000/report/email/all',
+    { method: 'POST' },
+  );
+});
+
+test('기록지 이메일 발송 오류 메시지를 전달한다', async () => {
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: false,
+    json: async () => ({ detail: 'Gmail 발송 설정이 완료되지 않았습니다.' }),
+  });
+
+  await expect(sendReportsToAllUsers()).rejects.toThrow('Gmail 발송 설정');
 });

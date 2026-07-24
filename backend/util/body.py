@@ -16,3 +16,6 @@ class FinishSession(BaseModel):
     count: int
     set: int
     weight: int = 0
+
+class SendReportEmail(BaseModel):
+    uid: str

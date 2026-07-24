@@ -3,4 +3,5 @@ fastapi
 korean_romanizer==0.28.0
 psycopg2-binary
 python-dotenv
+reportlab
 uvicorn
