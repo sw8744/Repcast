@@ -15,3 +15,4 @@ class FinishSession(BaseModel):
     sid: str
     count: int
     set: int
+    weight: int = 0

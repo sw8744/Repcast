@@ -7,21 +7,31 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <esp_netif.h>
 
 //================================================
 // 네트워크 / 장치 설정
 //================================================
 // 업로드 전에 실제 Wi-Fi 정보와 이 장치가 설치된 지점/기구 ID로 변경
-const char *WIFI_SSID = "Edtech1";
-const char *WIFI_PASSWORD = "024500699";
+const char *WIFI_SSID = "Seungwon Lee";
+const char *WIFI_PASSWORD = "sw8744!!";
 const char *API_BASE_URL = "https://api.repcast.site";
 const char *GYM_ID = "f696282aa4cd4f614aa995190cf442fe";
 const char *EQUIPMENT_ID = "db1a6654814f620bfc877e23fe4629f7";
+const IPAddress PRIMARY_DNS(1, 1, 1, 1);
+const IPAddress SECONDARY_DNS(8, 8, 8, 8);
 
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
 unsigned long lastWiFiRetryTime = 0;
 bool lastDisplayedWiFiConnected = false;
+
+enum UserLookupResult
+{
+    USER_LOOKUP_VALID,
+    USER_LOOKUP_NOT_FOUND,
+    USER_LOOKUP_API_ERROR
+};
 
 //================================================
 // 핀 설정
@@ -195,7 +205,10 @@ void keepBacklightOn();
 
 bool connectWiFi(unsigned long timeoutMs);
 void maintainWiFi();
-bool getUserByUid(const String &uid, String &userName);
+bool configureWiFiDns();
+const char *wifiStatusName(wl_status_t status);
+void printWiFiDiagnostics();
+UserLookupResult getUserByUid(const String &uid, String &userName);
 bool startRemoteSession(const String &uid, String &sid);
 bool finishRemoteSession();
 bool sendApiRequest(const String &method, const String &url,
@@ -203,6 +216,7 @@ bool sendApiRequest(const String &method, const String &url,
 bool getJsonString(const String &json, const String &key,
                    int searchFrom, String &value);
 String urlEncode(const String &value);
+bool isValidStoredUid(const String &uid);
 
 void initUltrasonicSensor();
 bool readUltrasonicDistance(int &distanceMm);
@@ -224,6 +238,7 @@ void commitSetRep();
 void setWorkoutLed(bool enabled);
 void beep();
 void playCardAlert();
+void playInvalidCardAlert();
 void playStartAlert();
 void playRestAlert();
 void playEndAlert();
@@ -268,12 +283,121 @@ void keepBacklightOn()
     digitalWrite(TFT_BL, HIGH);
 }
 
+const char *wifiStatusName(wl_status_t status)
+{
+    switch (status)
+    {
+        case WL_IDLE_STATUS:     return "IDLE";
+        case WL_NO_SSID_AVAIL:   return "SSID_NOT_FOUND";
+        case WL_SCAN_COMPLETED:  return "SCAN_COMPLETED";
+        case WL_CONNECTED:       return "CONNECTED";
+        case WL_CONNECT_FAILED:  return "CONNECT_FAILED";
+        case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+        case WL_DISCONNECTED:    return "DISCONNECTED";
+        default:                 return "UNKNOWN";
+    }
+}
+
+bool configureWiFiDns()
+{
+    // DHCP가 끝난 뒤 ESP-NETIF의 런타임 DNS 값을 직접 덮어쓴다.
+    esp_netif_t *station = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+    if (station == nullptr)
+    {
+        Serial.println("[WIFI] runtime DNS config=FAILED (STA netif missing)");
+        return false;
+    }
+
+    esp_netif_dns_info_t primaryInfo = {};
+    primaryInfo.ip.type = IPADDR_TYPE_V4;
+    primaryInfo.ip.u_addr.ip4.addr = ESP_IP4TOADDR(1, 1, 1, 1);
+
+    esp_netif_dns_info_t secondaryInfo = {};
+    secondaryInfo.ip.type = IPADDR_TYPE_V4;
+    secondaryInfo.ip.u_addr.ip4.addr = ESP_IP4TOADDR(8, 8, 8, 8);
+
+    esp_err_t primaryResult = esp_netif_set_dns_info(
+        station,
+        ESP_NETIF_DNS_MAIN,
+        &primaryInfo
+    );
+    esp_err_t secondaryResult = esp_netif_set_dns_info(
+        station,
+        ESP_NETIF_DNS_BACKUP,
+        &secondaryInfo
+    );
+    bool configured =
+        primaryResult == ESP_OK && secondaryResult == ESP_OK;
+
+    Serial.print("[WIFI] runtime DNS config=");
+    Serial.println(configured ? "OK" : "FAILED");
+    Serial.print("[WIFI] primary result=");
+    Serial.println(static_cast<int>(primaryResult));
+    Serial.print("[WIFI] secondary result=");
+    Serial.println(static_cast<int>(secondaryResult));
+    Serial.print("[WIFI] primary DNS=");
+    Serial.println(PRIMARY_DNS);
+    Serial.print("[WIFI] secondary DNS=");
+    Serial.println(SECONDARY_DNS);
+    return configured;
+}
+
+void printWiFiDiagnostics()
+{
+    wl_status_t status = WiFi.status();
+
+    Serial.println("[WIFI] ----------");
+    Serial.print("[WIFI] status=");
+    Serial.print(wifiStatusName(status));
+    Serial.print(" (");
+    Serial.print(static_cast<int>(status));
+    Serial.println(")");
+    Serial.print("[WIFI] ssid=");
+    Serial.println(WiFi.SSID());
+
+    if (status != WL_CONNECTED)
+        return;
+
+    Serial.print("[WIFI] ip=");
+    Serial.println(WiFi.localIP());
+    Serial.print("[WIFI] gateway=");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("[WIFI] dns=");
+    Serial.println(WiFi.dnsIP());
+    Serial.print("[WIFI] rssi=");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+
+    IPAddress apiIp;
+    int dnsResult = WiFi.hostByName("api.repcast.site", apiIp);
+    Serial.print("[WIFI] api.repcast.site DNS=");
+
+    if (dnsResult == 1)
+        Serial.println(apiIp);
+    else
+        Serial.println("FAILED");
+}
+
 bool connectWiFi(unsigned long timeoutMs)
 {
     if (WiFi.status() == WL_CONNECTED)
-        return true;
+    {
+        configureWiFiDns();
+        IPAddress resolvedIp;
 
-    Serial.print("WIFI CONNECTING TO ");
+        if (WiFi.hostByName("api.repcast.site", resolvedIp) == 1)
+        {
+            Serial.print("[WIFI] DNS resolved after runtime override: ");
+            Serial.println(resolvedIp);
+            return true;
+        }
+
+        Serial.println("[WIFI] DNS failed after runtime override");
+        return false;
+    }
+
+    Serial.print("[WIFI] connecting to ");
     Serial.println(WIFI_SSID);
 
     WiFi.mode(WIFI_STA);
@@ -291,12 +415,23 @@ bool connectWiFi(unsigned long timeoutMs)
 
     if (WiFi.status() != WL_CONNECTED)
     {
-        Serial.println("WIFI CONNECTION FAILED");
+        Serial.println("[WIFI] connection failed");
+        printWiFiDiagnostics();
         return false;
     }
 
-    Serial.print("WIFI CONNECTED, IP=");
-    Serial.println(WiFi.localIP());
+    Serial.println("[WIFI] connection established");
+    configureWiFiDns();
+    printWiFiDiagnostics();
+
+    IPAddress resolvedIp;
+
+    if (WiFi.hostByName("api.repcast.site", resolvedIp) != 1)
+    {
+        Serial.println("[WIFI] DNS resolution still failed after runtime override");
+        return false;
+    }
+
     return true;
 }
 
@@ -307,7 +442,7 @@ void maintainWiFi()
     if (!connected &&
         millis() - lastWiFiRetryTime >= WIFI_RETRY_INTERVAL_MS)
     {
-        Serial.println("WIFI RECONNECTING");
+        Serial.println("[WIFI] background reconnect");
         WiFi.disconnect();
         WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
         lastWiFiRetryTime = millis();
@@ -328,8 +463,27 @@ bool sendApiRequest(const String &method, const String &url,
 {
     responseBody = "";
 
+    Serial.println();
+    Serial.println("========== API REQUEST ==========");
+    Serial.print("[API] method=");
+    Serial.println(method);
+    Serial.print("[API] url=");
+    Serial.println(url);
+
+    if (requestBody.length() > 0)
+    {
+        Serial.print("[API] request body=");
+        Serial.println(requestBody);
+    }
+
+    printWiFiDiagnostics();
+
     if (!connectWiFi(WIFI_CONNECT_TIMEOUT_MS))
+    {
+        Serial.println("[API] aborted: WiFi is not connected");
+        Serial.println("=================================");
         return false;
+    }
 
     WiFiClientSecure client;
     // ESP32의 CA 저장소를 별도로 관리하지 않는 구성이다. HTTPS 암호화는
@@ -342,7 +496,8 @@ bool sendApiRequest(const String &method, const String &url,
 
     if (!http.begin(client, url))
     {
-        Serial.println("HTTP BEGIN FAILED");
+        Serial.println("[HTTP] begin failed");
+        Serial.println("=================================");
         return false;
     }
 
@@ -361,12 +516,41 @@ bool sendApiRequest(const String &method, const String &url,
     if (statusCode > 0)
         responseBody = http.getString();
 
-    Serial.print("HTTP ");
-    Serial.print(method);
-    Serial.print(" -> ");
+    Serial.print("[HTTP] status=");
     Serial.println(statusCode);
+    Serial.print("[HTTP] response bytes=");
+    Serial.println(responseBody.length());
+
+    if (statusCode <= 0)
+    {
+        Serial.print("[HTTP] transport error=");
+        Serial.println(HTTPClient::errorToString(statusCode));
+        Serial.println("[HTTP] check DNS/TLS signal above");
+    }
+    else if (statusCode < 200 || statusCode >= 300)
+    {
+        Serial.print("[HTTP] error response=");
+
+        if (responseBody.length() > 0)
+            Serial.println(responseBody);
+        else
+            Serial.println("(empty)");
+    }
+    else
+    {
+        Serial.println("[HTTP] request succeeded");
+
+        // 회원 조회 성공 응답에는 전화번호/이메일이 포함되므로 전체를
+        // 출력하지 않는다. 세션 응답은 진단에 필요한 sid/status만 포함한다.
+        if (url.indexOf("/session/") >= 0)
+        {
+            Serial.print("[HTTP] session response=");
+            Serial.println(responseBody);
+        }
+    }
 
     http.end();
+    Serial.println("=================================");
     return statusCode >= 200 && statusCode < 300;
 }
 
@@ -395,6 +579,25 @@ String urlEncode(const String &value)
     }
 
     return encoded;
+}
+
+bool isValidStoredUid(const String &uid)
+{
+    if (uid.length() != RFID_BLOCK_SIZE)
+        return false;
+
+    for (unsigned int i = 0; i < uid.length(); i++)
+    {
+        char c = uid.charAt(i);
+
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f')))
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool getJsonString(const String &json, const String &key,
@@ -455,38 +658,79 @@ bool getJsonString(const String &json, const String &key,
     return false;
 }
 
-bool getUserByUid(const String &uid, String &userName)
+UserLookupResult getUserByUid(const String &uid, String &userName)
 {
+    Serial.println();
+    Serial.println("========== USER LOOKUP ==========");
+    Serial.print("[USER] card uid=");
+    Serial.println(uid);
+
     String responseBody;
     String url = String(API_BASE_URL) + "/user?uid=" + urlEncode(uid);
 
     if (!sendApiRequest("GET", url, "", responseBody))
-        return false;
+    {
+        Serial.println("[USER] result=API_ERROR");
+        return USER_LOOKUP_API_ERROR;
+    }
 
     int usersPosition = responseBody.indexOf("\"users\"");
     int arrayStart = responseBody.indexOf('[', usersPosition);
     int arrayEnd = responseBody.indexOf(']', arrayStart);
 
     if (usersPosition < 0 || arrayStart < 0 || arrayEnd < 0)
-        return false;
+    {
+        Serial.println("[USER] result=RESPONSE_FORMAT_ERROR");
+        return USER_LOOKUP_API_ERROR;
+    }
+
+    String usersContent = responseBody.substring(arrayStart + 1, arrayEnd);
+    usersContent.trim();
+
+    if (usersContent.length() == 0)
+    {
+        Serial.println("[USER] result=NOT_FOUND");
+        return USER_LOOKUP_NOT_FOUND;
+    }
 
     String returnedUid;
 
-    if (!getJsonString(responseBody, "uid", arrayStart, returnedUid) ||
-        returnedUid != uid)
+    if (!getJsonString(responseBody, "uid", arrayStart, returnedUid))
     {
-        Serial.println("UID IS NOT A REGISTERED USER");
-        return false;
+        Serial.println("[USER] result=UID_MISSING_IN_RESPONSE");
+        return USER_LOOKUP_API_ERROR;
+    }
+
+    returnedUid.trim();
+    returnedUid.toLowerCase();
+
+    if (returnedUid != uid)
+    {
+        Serial.print("[USER] result=UID_MISMATCH, returned=");
+        Serial.println(returnedUid);
+        return USER_LOOKUP_API_ERROR;
     }
 
     if (!getJsonString(responseBody, "name", arrayStart, userName))
         userName = uid;
 
-    return true;
+    Serial.println("[USER] result=VALID");
+    Serial.print("[USER] name=");
+    Serial.println(userName);
+    return USER_LOOKUP_VALID;
 }
 
 bool startRemoteSession(const String &uid, String &sid)
 {
+    Serial.println();
+    Serial.println("========== SESSION START =========");
+    Serial.print("[SESSION] uid=");
+    Serial.println(uid);
+    Serial.print("[SESSION] gym=");
+    Serial.println(GYM_ID);
+    Serial.print("[SESSION] equipment=");
+    Serial.println(EQUIPMENT_ID);
+
     String requestBody =
         String("{\"uid\":\"") + uid +
         "\",\"gym\":\"" + String(GYM_ID) +
@@ -495,34 +739,51 @@ bool startRemoteSession(const String &uid, String &sid)
     String url = String(API_BASE_URL) + "/session/start";
 
     if (!sendApiRequest("POST", url, requestBody, responseBody))
+    {
+        Serial.println("[SESSION] start result=API_ERROR");
         return false;
+    }
 
     if (!getJsonString(responseBody, "sid", 0, sid) ||
         sid.length() == 0)
     {
-        Serial.println("SESSION START RESPONSE HAS NO SID");
+        Serial.println("[SESSION] start result=SID_MISSING");
         return false;
     }
 
-    Serial.print("SESSION STARTED: ");
+    Serial.print("[SESSION] start result=SUCCESS, sid=");
     Serial.println(sid);
     return true;
 }
 
 bool finishRemoteSession()
 {
+    Serial.println();
+    Serial.println("========= SESSION FINISH =========");
+
     if (currentSessionId.length() == 0)
     {
-        Serial.println("NO ACTIVE SESSION TO FINISH");
+        Serial.println("[SESSION] finish result=NO_ACTIVE_SESSION");
         return false;
     }
 
     String requestBody =
         String("{\"sid\":\"") + currentSessionId +
         "\",\"count\":" + String(memberTotalReps) +
-        ",\"set\":" + String(memberTotalSets) + "}";
+        ",\"set\":" + String(memberTotalSets) +
+        ",\"weight\":" + String(memberWorkoutWeightKg) + "}";
     String responseBody;
     String url = String(API_BASE_URL) + "/session/finish";
+
+    Serial.print("[SESSION] sid=");
+    Serial.println(currentSessionId);
+    Serial.print("[SESSION] total count=");
+    Serial.println(memberTotalReps);
+    Serial.print("[SESSION] total sets=");
+    Serial.println(memberTotalSets);
+    Serial.print("[SESSION] weight=");
+    Serial.print(memberWorkoutWeightKg);
+    Serial.println(" kg");
 
     bool success = false;
 
@@ -532,14 +793,21 @@ bool finishRemoteSession()
         success = sendApiRequest("POST", url, requestBody, responseBody);
 
         if (!success && attempt == 0)
+        {
+            Serial.println("[SESSION] finish failed; retrying once");
             delay(500);
+        }
     }
 
     if (success)
     {
-        Serial.print("SESSION FINISHED: ");
+        Serial.print("[SESSION] finish result=SUCCESS, sid=");
         Serial.println(currentSessionId);
         currentSessionId = "";
+    }
+    else
+    {
+        Serial.println("[SESSION] finish result=API_ERROR");
     }
 
     return success;
@@ -597,7 +865,19 @@ void commitSetRep()
 void setup()
 {
     Serial.begin(115200);
-    delay(100);
+    delay(500);
+
+    Serial.println();
+    Serial.println("=================================");
+    Serial.println("       RepCast ESP32 BOOT");
+    Serial.println("=================================");
+    Serial.println("[BOOT] serial baud=115200");
+    Serial.print("[BOOT] API=");
+    Serial.println(API_BASE_URL);
+    Serial.print("[BOOT] gym=");
+    Serial.println(GYM_ID);
+    Serial.print("[BOOT] equipment=");
+    Serial.println(EQUIPMENT_ID);
 
     // HC-SR04 핀 초기화
     initUltrasonicSensor();
@@ -959,6 +1239,9 @@ void readRFID()
         return;
     }
 
+    Serial.println();
+    Serial.println("=========== CARD DETECTED =========");
+
     String uid = "";
 
     for (byte i = 0; i < rfid.uid.size; i++)
@@ -971,7 +1254,7 @@ void readRFID()
 
     uid.toUpperCase();
 
-    Serial.print("CARD UID: ");
+    Serial.print("[CARD] hardware uid=");
     Serial.println(uid);
 
     String storedUid = "";
@@ -981,13 +1264,40 @@ void readRFID()
     rfid.PCD_StopCrypto1();
     releaseSPI();
 
+    // RFID 통신을 모두 끝낸 직후 카드 인식 알림음을 낸다.
+    playCardAlert();
+
     if (!uidReadSuccess)
     {
+        Serial.println("[CARD] result=DATA_BLOCK_READ_ERROR");
         currentUser = "";
         currentUID = "";
         screen = S01_TAPCARD;
+        playInvalidCardAlert();
         drawStatusMessage("CARD ERROR", "UID READ FAILED", ILI9341_RED);
         delay(1500);
+        drawTapCard();
+        return;
+    }
+
+    // 서버에서 발급하는 UID는 16자리 소문자 hex이다. 카드에 대문자로
+    // 기록된 경우도 같은 UID로 조회되도록 정규화한다.
+    storedUid.trim();
+    storedUid.toLowerCase();
+    Serial.print("[CARD] normalized stored uid=");
+    Serial.println(storedUid);
+
+    if (!isValidStoredUid(storedUid))
+    {
+        Serial.print("[CARD] result=INVALID_UID_FORMAT, length=");
+        Serial.println(storedUid.length());
+        currentUser = "";
+        currentUID = "";
+        currentSessionId = "";
+        screen = S01_TAPCARD;
+        playInvalidCardAlert();
+        drawStatusMessage("INVALID CARD", "INVALID UID FORMAT", ILI9341_RED);
+        delay(1800);
         drawTapCard();
         return;
     }
@@ -995,14 +1305,30 @@ void readRFID()
     drawStatusMessage("CHECKING CARD", "PLEASE WAIT", ILI9341_CYAN);
 
     String userName = "";
+    UserLookupResult lookupResult = getUserByUid(storedUid, userName);
 
-    if (!getUserByUid(storedUid, userName))
+    if (lookupResult == USER_LOOKUP_NOT_FOUND)
     {
+        Serial.println("[CARD] authorization=DENIED");
         currentUser = "";
         currentUID = "";
         currentSessionId = "";
         screen = S01_TAPCARD;
+        playInvalidCardAlert();
         drawStatusMessage("INVALID CARD", "ACCESS DENIED", ILI9341_RED);
+        delay(1800);
+        drawTapCard();
+        return;
+    }
+
+    if (lookupResult == USER_LOOKUP_API_ERROR)
+    {
+        Serial.println("[CARD] authorization=UNKNOWN_DUE_TO_API_ERROR");
+        currentUser = "";
+        currentUID = "";
+        currentSessionId = "";
+        screen = S01_TAPCARD;
+        drawStatusMessage("API ERROR", "CHECK WIFI / SERVER", ILI9341_RED);
         delay(1800);
         drawTapCard();
         return;
@@ -1012,6 +1338,7 @@ void readRFID()
 
     if (!startRemoteSession(storedUid, sid))
     {
+        Serial.println("[CARD] session start failed");
         currentUser = "";
         currentUID = "";
         currentSessionId = "";
@@ -1026,7 +1353,7 @@ void readRFID()
     currentUID = storedUid;
     currentSessionId = sid;
 
-    playCardAlert();
+    Serial.println("[CARD] authorization=GRANTED");
     screen = S02_HELLO;
     drawHello(currentUser);
 }
@@ -1435,8 +1762,15 @@ void beep()
 
 void playCardAlert()
 {
-    tone(BUZZER_PIN, 1800);
-    delay(120);
+    tone(BUZZER_PIN, 2200);
+    delay(100);
+    noTone(BUZZER_PIN);
+}
+
+void playInvalidCardAlert()
+{
+    tone(BUZZER_PIN, 450);
+    delay(280);
     noTone(BUZZER_PIN);
 }
 

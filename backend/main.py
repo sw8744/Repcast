@@ -181,14 +181,21 @@ def session_start(session: InsertSession):
     }
 
 @app.post("/session/finish")
-def session_start(session: FinishSession):
+def session_finish(session: FinishSession):
     finish = datetime.datetime.now()
     con = db.connect()
-    query = "UPDATE equipment.session SET finish = %s, count = %s, set = %s WHERE sid = %s"
-    params = (finish, session.count, session.set, session.sid)
-    db.executeQuery(con, query, params)
-
-    db.executeQuery(con, query, params)
+    try:
+        query = "UPDATE equipment.session SET finish = %s, count = %s, set = %s, weight = %s WHERE sid = %s"
+        params = (
+            finish,
+            session.count,
+            session.set,
+            session.weight,
+            session.sid,
+        )
+        db.executeQuery(con, query, params)
+    finally:
+        con.close()
 
     return {
         "status": "success"
