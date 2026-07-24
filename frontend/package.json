@@ -14,9 +14,9 @@
     "web-vitals": "^2.1.4"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build && sudo cp -r build/* /var/www/repcast",
-    "build:sites": "react-scripts build && node scripts/build-sites.mjs",
+    "start": "node scripts/react-with-root-env.mjs start",
+    "build": "node scripts/react-with-root-env.mjs build && sudo cp -r build/* /var/www/repcast",
+    "build:sites": "node scripts/react-with-root-env.mjs build && node scripts/build-sites.mjs",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },

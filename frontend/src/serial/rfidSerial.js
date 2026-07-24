@@ -1,5 +1,16 @@
 const DEFAULT_TIMEOUT_MS = 60000;
 
+export function isRetryableArduinoError(line) {
+  return line.startsWith('ERR,AUTH,Error in communication');
+}
+
+export function getArduinoErrorMessage(line) {
+  if (isRetryableArduinoError(line)) {
+    return '다시 시도해 주세요.';
+  }
+  return `Arduino 오류: ${line}`;
+}
+
 export class RfidSerialClient {
   constructor() {
     this.port = null;
@@ -63,23 +74,43 @@ export class RfidSerialClient {
     waiter.resolve(line);
   }
 
-  waitFor(predicate, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  waitFor(predicate, timeoutMs = DEFAULT_TIMEOUT_MS, signal) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException('카드 등록이 취소되었습니다.', 'AbortError'));
+        return;
+      }
+
+      const cleanup = (waiter) => {
+        window.clearTimeout(waiter.timer);
+        signal?.removeEventListener('abort', abortWait);
+      };
       const waiter = {
         predicate,
-        resolve,
-        reject,
+        resolve: (line) => {
+          cleanup(waiter);
+          resolve(line);
+        },
+        reject: (error) => {
+          cleanup(waiter);
+          reject(error);
+        },
         timer: window.setTimeout(() => {
           this.waiters = this.waiters.filter((item) => item !== waiter);
-          reject(new Error('Arduino 응답 시간이 초과되었습니다. 카드를 다시 태그해 주세요.'));
+          waiter.reject(new Error('Arduino 응답 시간이 초과되었습니다. 카드를 다시 태그해 주세요.'));
         }, timeoutMs),
       };
+      const abortWait = () => {
+        this.waiters = this.waiters.filter((item) => item !== waiter);
+        waiter.reject(new DOMException('카드 등록이 취소되었습니다.', 'AbortError'));
+      };
+      signal?.addEventListener('abort', abortWait, { once: true });
       this.waiters.push(waiter);
     });
   }
 
-  async sendAndWait(command, predicate, timeoutMs = 5000) {
-    const response = this.waitFor(predicate, timeoutMs);
+  async sendAndWait(command, predicate, timeoutMs = 5000, signal) {
+    const response = this.waitFor(predicate, timeoutMs, signal);
     await this.writeLine(command);
     return response;
   }

@@ -1,27 +1,97 @@
-const API_BASE_URL = (process.env.REACT_APP_API_BASE_URL || '').replace(/\/$/, '');
+function getApiBaseUrl() {
+  const apiAddress = process.env.REACT_APP_API_ADDR;
+  if (!apiAddress) {
+    throw new Error('루트 .env에 API_ADDR를 설정한 뒤 프런트엔드를 다시 실행해 주세요.');
+  }
+  return apiAddress.replace(/\/$/, '');
+}
 
-export async function registerUser({ name, phone, email }) {
-  const response = await fetch(`${API_BASE_URL}/user/register`, {
+async function getErrorMessage(response, fallback) {
+  try {
+    const body = await response.json();
+    return body.detail || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function getMembershipMonths(joinDate, expireDate) {
+  const [joinYear, joinMonth] = joinDate.slice(0, 10).split('-').map(Number);
+  const [expireYear, expireMonth] = expireDate.slice(0, 10).split('-').map(Number);
+  return (expireYear * 12 + expireMonth) - (joinYear * 12 + joinMonth);
+}
+
+function getLocalDateString() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatLastUsed(lastUsed) {
+  if (!lastUsed) return '이용 기록 없음';
+
+  const [date, time = ''] = String(lastUsed).split('T');
+  return time ? `${date} ${time.slice(0, 5)}` : date;
+}
+
+export async function getUsers() {
+  const response = await fetch(`${getApiBaseUrl()}/user`);
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '회원 목록을 불러오지 못했습니다.'));
+  }
+
+  const body = await response.json();
+  if (!Array.isArray(body.users)) {
+    throw new Error('서버에서 유효한 회원 목록을 받지 못했습니다.');
+  }
+
+  const today = getLocalDateString();
+  return body.users.map((user) => {
+    const joinDate = String(user.join_date || '').slice(0, 10);
+    const expireDate = String(user.expire_date || '').slice(0, 10);
+    const months = joinDate && expireDate ? getMembershipMonths(joinDate, expireDate) : 0;
+
+    return {
+      id: String(user.uid || ''),
+      name: String(user.name || ''),
+      phone: String(user.tel || ''),
+      email: String(user.email || ''),
+      plan: months > 0 ? `${months}개월 이용권` : '이용권 정보 없음',
+      startDate: joinDate,
+      expireDate,
+      lastUsed: formatLastUsed(user.last_use),
+      status: expireDate >= today ? '이용 중' : '만료',
+    };
+  });
+}
+
+export async function registerUser({ name, phone, email, plan }) {
+  const expire = Number.parseInt(plan, 10);
+  const tel = phone.replace(/\D/g, '');
+  if (![1, 3, 6, 12].includes(expire)) {
+    throw new Error('유효한 이용권 개월 수를 선택해 주세요.');
+  }
+  if (!/^010\d{8}$/.test(tel)) {
+    throw new Error('전화번호는 010으로 시작하는 11자리 번호여야 합니다.');
+  }
+
+  const response = await fetch(`${getApiBaseUrl()}/user/register`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       name: name.trim(),
-      tel: Number(phone.replace(/\D/g, '')),
+      tel,
       email: email.trim(),
+      expire,
     }),
   });
 
   if (!response.ok) {
-    let message = '회원 등록 요청에 실패했습니다.';
-    try {
-      const body = await response.json();
-      message = body.detail || message;
-    } catch {
-      // JSON 오류 응답이 아니면 기본 메시지를 사용한다.
-    }
-    throw new Error(message);
+    throw new Error(await getErrorMessage(response, '회원 등록 요청에 실패했습니다.'));
   }
 
   const body = await response.json();

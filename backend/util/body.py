@@ -2,8 +2,9 @@ from pydantic import BaseModel
 
 class UserRegister(BaseModel):
     name: str
-    tel: int
+    tel: str
     email: str
+    expire: int
 
 class InsertSession(BaseModel):
     uid: str

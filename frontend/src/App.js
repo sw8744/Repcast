@@ -29,8 +29,12 @@ import {
   X,
 } from 'lucide-react';
 import './App.css';
-import { registerUser } from './api/users';
-import { RfidSerialClient } from './serial/rfidSerial';
+import { getUsers, registerUser } from './api/users';
+import {
+  getArduinoErrorMessage,
+  isRetryableArduinoError,
+  RfidSerialClient,
+} from './serial/rfidSerial';
 
 const navigation = [
   { label: '대시보드', icon: LayoutDashboard, path: '/dashboard' },
@@ -41,13 +45,8 @@ const navigation = [
   { label: '설정', icon: Settings, path: '/settings' },
 ];
 
-const initialMembers = [
-  { id: 'RC-1028', name: '김소연', phone: '010-2384-1028', plan: '12개월 이용권', startDate: '2026-01-12', cardId: 'A4 12 8F 39', status: '이용 중' },
-  { id: 'RC-1027', name: '박태호', phone: '010-5821-9930', plan: '6개월 이용권', startDate: '2026-03-05', cardId: '7B 90 1C 22', status: '이용 중' },
-  { id: 'RC-1026', name: '이유나', phone: '010-4462-7015', plan: '3개월 이용권', startDate: '2026-05-18', cardId: '32 DF 4A 11', status: '이용 중' },
-  { id: 'RC-1025', name: '최승민', phone: '010-7715-2046', plan: '1개월 이용권', startDate: '2026-06-24', cardId: 'C9 20 77 A3', status: '만료 예정' },
-  { id: 'RC-1024', name: '정지영', phone: '010-9157-3308', plan: '12개월 이용권', startDate: '2025-11-02', cardId: '18 6E 54 B0', status: '이용 중' },
-];
+const initialMembers = [];
+const AUTO_RETRY_DELAY_MS = 800;
 
 const metrics = [
   { label: '총 세션 수', value: '15', note: '오늘 기록된 세션 수', icon: Users, tone: 'blue' },
@@ -156,8 +155,9 @@ function HorizontalChart({ data, color = 'teal', max = 2500, unit = 'kg', ranked
   );
 }
 
-function MemberManagement({ members, onAddMember }) {
+function MemberManagement({ members, memberListState, onAddMember }) {
   const serialClientRef = useRef(new RfidSerialClient());
+  const retryControllerRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [serialState, setSerialState] = useState(RfidSerialClient.isSupported() ? 'disconnected' : 'unsupported');
@@ -168,17 +168,17 @@ function MemberManagement({ members, onAddMember }) {
     name: '',
     phone: '',
     email: '',
-    plan: '3개월 이용권',
-    startDate: '2026-07-24',
+    plan: '',
+    startDate: '',
   });
 
-  const isBusy = ['registering', 'write-mode', 'writing', 'read-mode', 'verifying'].includes(workflow.stage);
+  const isBusy = ['registering', 'write-mode', 'writing', 'read-mode', 'verifying', 'retrying'].includes(workflow.stage);
 
   const filteredMembers = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
     if (!keyword) return members;
     return members.filter((member) =>
-      [member.name, member.phone, member.id, member.cardId]
+      [member.name, member.phone, member.email]
         .some((value) => value.toLowerCase().includes(keyword))
     );
   }, [members, searchTerm]);
@@ -187,6 +187,8 @@ function MemberManagement({ members, onAddMember }) {
     const { name, value } = event.target;
     setForm((current) => ({ ...current, [name]: value }));
   };
+
+  useEffect(() => () => retryControllerRef.current?.abort(), []);
 
   const connectArduino = async () => {
     setSerialState('connecting');
@@ -207,34 +209,53 @@ function MemberManagement({ members, onAddMember }) {
   const expectArduino = async (promise) => {
     const line = await promise;
     if (line.startsWith('ERR,')) {
-      throw new Error(`Arduino 오류: ${line}`);
+      const error = new Error(getArduinoErrorMessage(line));
+      error.retryable = isRetryableArduinoError(line);
+      throw error;
     }
     return line;
   };
 
-  const programAndVerifyCard = async (uid) => {
+  const programAndVerifyCard = async (uid, signal) => {
     const client = serialClientRef.current;
+    const throwIfCancelled = () => {
+      if (signal.aborted) {
+        throw new DOMException('카드 등록이 취소되었습니다.', 'AbortError');
+      }
+    };
 
+    throwIfCancelled();
     setWorkflow({ stage: 'write-mode', message: '쓰기 모드로 전환 중입니다. 카드를 리더기에서 떼어 주세요.' });
     await expectArduino(client.sendAndWait(
       `W,${uid}`,
       (line) => line === `OK,MODE,W,${uid}` || line.startsWith('ERR,'),
+      5000,
+      signal,
     ));
 
+    throwIfCancelled();
     setWorkflow({ stage: 'writing', message: '카드를 리더기에 태그해 주세요. UID를 카드에 기록합니다.' });
     await expectArduino(client.waitFor(
       (line) => line === `OK,W,${uid}` || line.startsWith('ERR,'),
+      undefined,
+      signal,
     ));
 
+    throwIfCancelled();
     setWorkflow({ stage: 'read-mode', message: '쓰기 성공. 읽기 모드로 전환 중입니다.' });
     await expectArduino(client.sendAndWait(
       'R',
       (line) => line === 'OK,MODE,R' || line.startsWith('ERR,'),
+      5000,
+      signal,
     ));
 
+    throwIfCancelled();
     setWorkflow({ stage: 'verifying', message: '카드를 리더기에서 완전히 떼었다가 다시 태그해 주세요.' });
     const verifyLine = await expectArduino(client.waitFor(
       (line) => line.startsWith('OK,R,') || line.startsWith('ERR,'),
+      undefined,
+      signal,
     ));
     const readUid = verifyLine.slice('OK,R,'.length);
     if (readUid !== uid) {
@@ -243,23 +264,63 @@ function MemberManagement({ members, onAddMember }) {
   };
 
   const finishRegistration = async (uid) => {
+    retryControllerRef.current?.abort();
+    const controller = new AbortController();
+    retryControllerRef.current = controller;
+    let retryCount = 0;
+
     try {
-      await programAndVerifyCard(uid);
-      const newMember = onAddMember({ ...form, uid });
-      setForm({
-        name: '',
-        phone: '',
-        email: '',
-        plan: '3개월 이용권',
-        startDate: '2026-07-24',
-      });
-      setPendingUid('');
-      setWorkflow({ stage: 'success', message: `카드 검증 완료: ${uid}` });
-      setSuccessMessage(`${newMember.name} 회원과 RFID 카드가 등록되었습니다.`);
-      window.setTimeout(() => setSuccessMessage(''), 3000);
-    } catch (error) {
-      setWorkflow({ stage: 'error', message: error.message });
+      while (!controller.signal.aborted) {
+        try {
+          await programAndVerifyCard(uid, controller.signal);
+          const newMember = onAddMember({ ...form, uid });
+          setForm({
+            name: '',
+            phone: '',
+            email: '',
+            plan: '',
+            startDate: '',
+          });
+          setPendingUid('');
+          setWorkflow({ stage: 'success', message: '카드 읽기 검증이 완료되었습니다.' });
+          setSuccessMessage(`${newMember.name} 회원과 RFID 카드가 등록되었습니다.`);
+          window.setTimeout(() => setSuccessMessage(''), 3000);
+          return;
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          if (!error.retryable) {
+            setWorkflow({ stage: 'error', message: error.message });
+            return;
+          }
+
+          retryCount += 1;
+          setWorkflow({
+            stage: 'retrying',
+            message: `통신 오류가 발생했습니다. 카드를 떼었다 다시 태그해 주세요. 자동 재시도 중 (${retryCount}번째)`,
+          });
+          await new Promise((resolve) => {
+            const timer = window.setTimeout(resolve, AUTO_RETRY_DELAY_MS);
+            controller.signal.addEventListener('abort', () => {
+              window.clearTimeout(timer);
+              resolve();
+            }, { once: true });
+          });
+        }
+      }
+    } finally {
+      if (retryControllerRef.current === controller) {
+        retryControllerRef.current = null;
+      }
     }
+  };
+
+  const cancelCardRegistration = () => {
+    if (!retryControllerRef.current) return;
+    retryControllerRef.current.abort();
+    setWorkflow({
+      stage: 'cancelled',
+      message: '카드 등록을 취소했습니다. 준비가 되면 카드 작업을 다시 시도해 주세요.',
+    });
   };
 
   const submitMember = async (event) => {
@@ -282,18 +343,6 @@ function MemberManagement({ members, onAddMember }) {
 
   return (
     <div className="members-page">
-      <div className="page-heading-row">
-        <div>
-          <span className="eyebrow">MEMBER DIRECTORY</span>
-          <h2>회원 관리</h2>
-          <p>회원 정보와 RFID 카드를 등록하고 이용 상태를 관리합니다.</p>
-        </div>
-        <div className="member-summary">
-          <span><strong>{members.length}</strong> 전체 회원</span>
-          <span><strong>{members.filter((member) => member.status === '이용 중').length}</strong> 이용 중</span>
-        </div>
-      </div>
-
       {successMessage && (
         <div className="success-toast" role="status">
           <CheckCircle2 size={17} /> {successMessage}
@@ -317,7 +366,6 @@ function MemberManagement({ members, onAddMember }) {
                 name="name"
                 value={form.name}
                 onChange={updateField}
-                placeholder="예: 홍길동"
                 required
               />
             </label>
@@ -331,7 +379,6 @@ function MemberManagement({ members, onAddMember }) {
                   type="tel"
                   value={form.phone}
                   onChange={updateField}
-                  placeholder="010-0000-0000"
                   required
                 />
               </div>
@@ -344,7 +391,6 @@ function MemberManagement({ members, onAddMember }) {
                 type="email"
                 value={form.email}
                 onChange={updateField}
-                placeholder="member@example.com"
                 required
               />
             </label>
@@ -352,7 +398,8 @@ function MemberManagement({ members, onAddMember }) {
             <div className="form-row">
               <label>
                 이용권
-                <select name="plan" value={form.plan} onChange={updateField}>
+                <select name="plan" value={form.plan} onChange={updateField} required>
+                  <option value="" disabled>이용권 선택</option>
                   <option>1개월 이용권</option>
                   <option>3개월 이용권</option>
                   <option>6개월 이용권</option>
@@ -392,14 +439,22 @@ function MemberManagement({ members, onAddMember }) {
 
               <div className="workflow-steps" aria-label="RFID 카드 등록 진행 상태">
                 <span className={pendingUid || workflow.stage === 'success' ? 'done' : workflow.stage === 'registering' ? 'active' : ''}>1. UID 발급</span>
-                <span className={['read-mode', 'verifying', 'success'].includes(workflow.stage) ? 'done' : ['write-mode', 'writing'].includes(workflow.stage) ? 'active' : ''}>2. 카드 쓰기</span>
+                <span className={['read-mode', 'verifying', 'success'].includes(workflow.stage) ? 'done' : ['write-mode', 'writing', 'retrying'].includes(workflow.stage) ? 'active' : ''}>2. 카드 쓰기</span>
                 <span className={workflow.stage === 'success' ? 'done' : workflow.stage === 'verifying' ? 'active' : ''}>3. 읽기 검증</span>
               </div>
 
-              {pendingUid && workflow.stage === 'error' && (
-                <button className="retry-button" type="button" onClick={() => finishRegistration(pendingUid)}>
-                  RFID 카드 작업 다시 시도
-                </button>
+              {pendingUid && (
+                <div className="workflow-actions">
+                  {isBusy ? (
+                    <button className="cancel-button" type="button" onClick={cancelCardRegistration}>
+                      카드 등록 취소
+                    </button>
+                  ) : ['error', 'cancelled'].includes(workflow.stage) ? (
+                    <button className="retry-button" type="button" onClick={() => finishRegistration(pendingUid)}>
+                      RFID 카드 작업 다시 시도
+                    </button>
+                  ) : null}
+                </div>
               )}
 
               {serialLog.length > 0 && (
@@ -409,7 +464,7 @@ function MemberManagement({ members, onAddMember }) {
               )}
             </div>
 
-            <button className="primary-button" type="submit" disabled={isBusy || serialState !== 'connected'}>
+            <button className="primary-button" type="submit" disabled={isBusy || Boolean(pendingUid) || serialState !== 'connected'}>
               {isBusy ? <LoaderCircle className="spin" size={16} /> : <UserPlus size={16} />}
               회원 등록 및 카드 발급
             </button>
@@ -420,14 +475,18 @@ function MemberManagement({ members, onAddMember }) {
           <div className="member-list-header">
             <div>
               <h3>회원 목록</h3>
-              <p>최근 등록된 회원부터 표시됩니다.</p>
+              <p>등록이 완료된 회원을 표시합니다.</p>
+            </div>
+            <div className="member-summary">
+              <span><strong>{members.length}</strong> 전체 회원</span>
+              <span><strong>{members.filter((member) => member.status === '이용 중').length}</strong> 이용 중</span>
             </div>
             <label className="search-box">
               <Search size={15} />
               <input
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="이름, 연락처, 카드 검색"
+                placeholder="이름 또는 연락처 검색"
                 aria-label="회원 검색"
               />
             </label>
@@ -440,7 +499,7 @@ function MemberManagement({ members, onAddMember }) {
                   <th>회원</th>
                   <th>연락처</th>
                   <th>이용권</th>
-                  <th>RFID 카드</th>
+                  <th>최근 이용</th>
                   <th>상태</th>
                   <th><span className="sr-only">관리</span></th>
                 </tr>
@@ -451,19 +510,32 @@ function MemberManagement({ members, onAddMember }) {
                     <td>
                       <div className="member-identity">
                         <span>{member.name.slice(0, 1)}</span>
-                        <div><strong>{member.name}</strong><small>{member.id}</small></div>
+                        <div><strong>{member.name}</strong></div>
                       </div>
                     </td>
-                    <td>{member.phone}</td>
+                    <td>
+                      <div className="contact-details">
+                        <strong>{member.phone}</strong>
+                        <small>{member.email}</small>
+                      </div>
+                    </td>
                     <td><strong className="plan-name">{member.plan}</strong><small className="start-date">{member.startDate} 시작</small></td>
-                    <td><span className={`card-chip ${member.cardId ? '' : 'empty'}`}>{member.cardId || '미등록'}</span></td>
+                    <td><span className="last-used">{member.lastUsed || '이용 기록 없음'}</span></td>
                     <td><span className={`status-pill ${member.status === '이용 중' ? 'active' : 'warning'}`}>{member.status}</span></td>
                     <td><button className="more-button" aria-label={`${member.name} 회원 관리`}><MoreHorizontal size={17} /></button></td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {filteredMembers.length === 0 && <div className="empty-search">검색 결과가 없습니다.</div>}
+            {filteredMembers.length === 0 && (
+              <div className="empty-search">
+                {memberListState.loading && '회원 목록을 불러오는 중입니다.'}
+                {!memberListState.loading && memberListState.error && memberListState.error}
+                {!memberListState.loading && !memberListState.error && (
+                  searchTerm.trim() ? '검색 결과가 없습니다.' : '등록된 회원이 없습니다.'
+                )}
+              </div>
+            )}
           </div>
         </article>
       </section>
@@ -493,6 +565,7 @@ function App() {
   const [lastUpdated, setLastUpdated] = useState('14:30');
   const [refreshing, setRefreshing] = useState(false);
   const [members, setMembers] = useState(initialMembers);
+  const [memberListState, setMemberListState] = useState({ loading: false, error: '' });
 
   const activeItem = navigation.find((item) => item.path === currentPath) || navigation[0];
 
@@ -506,6 +579,27 @@ function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  useEffect(() => {
+    if (currentPath !== '/members') return undefined;
+
+    let active = true;
+    setMemberListState({ loading: true, error: '' });
+    getUsers()
+      .then((users) => {
+        if (!active) return;
+        setMembers(users);
+        setMemberListState({ loading: false, error: '' });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setMemberListState({ loading: false, error: error.message });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentPath]);
+
   const navigate = (path) => {
     if (path !== currentPath) {
       window.history.pushState({}, '', path);
@@ -518,10 +612,11 @@ function App() {
     const member = {
       id: form.uid,
       name: form.name.trim(),
-      phone: form.phone.trim(),
+      phone: form.phone.replace(/\D/g, ''),
+      email: form.email.trim(),
       plan: form.plan,
       startDate: form.startDate,
-      cardId: form.uid,
+      lastUsed: '이용 기록 없음',
       status: '이용 중',
     };
     setMembers((current) => [member, ...current]);
@@ -667,7 +762,13 @@ function App() {
             </>
           )}
 
-          {currentPath === '/members' && <MemberManagement members={members} onAddMember={addMember} />}
+          {currentPath === '/members' && (
+            <MemberManagement
+              members={members}
+              memberListState={memberListState}
+              onAddMember={addMember}
+            />
+          )}
 
           {!['/dashboard', '/members'].includes(currentPath) && <PlaceholderPage title={activeItem.label} />}
         </div>
