@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
-  BarChart3,
   BicepsFlexed,
   CalendarDays,
   Cable,
@@ -28,7 +27,6 @@ import {
   Radio,
   Rows3,
   Search,
-  Settings,
   UserCog,
   UserPlus,
   Users,
@@ -50,8 +48,6 @@ const navigation = [
   { label: '세션 기록', icon: CalendarDays, path: '/sessions' },
   { label: '회원 관리', icon: Users, path: '/members' },
   { label: '기구 관리', icon: Dumbbell, path: '/equipment' },
-  { label: '통계 분석', icon: BarChart3, path: '/analytics' },
-  { label: '설정', icon: Settings, path: '/settings' },
 ];
 
 const equipmentCategoryIcons = {
